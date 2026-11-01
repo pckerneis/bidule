@@ -235,11 +235,43 @@ function makeVM(src, host) {
       if (!secName) err(l, `unknown asset kind "${kind}"; use "tiles", "sprites", "maps", "sounds" or "palette"`);
       return new SysReq({ type: "pick", kind, finish: cartId => {
         if (cartId == null) return -1;
+        const pick = { cartId };          // shared by every handle opened from this pick
         const sec = cloneSection(secName, host.cartSections(cartId)[secName]);
-        handles.push({ cartId, kind, secName, sec, dirty: false });
+        handles.push({ pick, kind, secName, sec, dirty: false });
         return handles.length - 1;
       } });
     }),
+    // Proposed (spec › Editor support): another asset section of an already-picked cart
+    opensection: B([2, 2], (a, l) => {
+      const H_ = hget(a[0], l), kind = textArg(a[1], l);
+      if (kind === "music") err(l, "music assets aren't supported yet");
+      const secName = ASSET_KINDS[kind];
+      if (!secName) err(l, `unknown asset kind "${kind}"; use "tiles", "sprites", "maps", "sounds" or "palette"`);
+      // tiles and sprites live in one section: share it so edits through either handle agree
+      const same = handles.find(x => x.pick === H_.pick && x.secName === secName);
+      const sec = same ? same.sec : cloneSection(secName, host.cartSections(H_.pick.cartId)[secName]);
+      handles.push({ pick: H_.pick, kind, secName, sec, dirty: false });
+      return handles.length - 1;
+    }),
+    cartname: B([2, 2], (a, l) => {
+      const H_ = hget(a[0], l);
+      return BUILTINS_IMPL.fmt.fn([a[1], new TextV(host.cartTitle(H_.pick.cartId))], l);
+    }),
+    drawasset: B([4, 4], (a, l) => {
+      const H_ = hget(a[0], l), i = ti(a[1], l), x = ti(a[2], l), y = ti(a[3], l);
+      if (H_.secName !== "sprites") err(l, `drawasset draws tiles or sprites, not ${H_.kind}`);
+      const s = H_.sec;
+      if (H_.kind === "tiles") {
+        if (i < 0 || i >= TILE_COUNT) err(l, `tile ${i} doesn't exist`);
+        drawTile(s.sheet, i, x, y);
+      } else {
+        const sl = s.slots[i];
+        if (!sl) err(l, `sprite ${i} doesn't exist`);
+        if (!sl.empty) for (let ty = 0; ty < sl.h; ty++) for (let tx = 0; tx < sl.w; tx++) drawTile(s.sheet, sl.tile + ty * SHEET_COLS + tx, x + tx * 8, y + ty * 8);
+      }
+      return 0;
+    }),
+    status: B([1, 1], (a, l) => { host.setStatusLine(textOf(a[0], l)); return 0; }),
     readasset: B([3, 3], (a, l) => {
       const H_ = hget(a[0], l), d = a[1];
       if (!(d instanceof Arr || d instanceof Row)) err(l, "readasset reads into an array: readasset(h, dst, i)");
@@ -274,7 +306,9 @@ function makeVM(src, host) {
     }),
     savecart: B([1, 1], (a, l) => {
       const H_ = hget(a[0], l);
-      return new SysReq({ type: "save", handle: H_, finish: r => r ? 1 : 0 });
+      // one confirmation saves every section opened through this pick
+      const group = handles.filter(x => x.pick === H_.pick);
+      return new SysReq({ type: "save", handle: H_, handles: group, finish: r => r ? 1 : 0 });
     }),
   };
   const BI = BUILTINS_IMPL;

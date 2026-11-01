@@ -139,7 +139,10 @@
             <div><code>readasset(h, dst, i)</code> returns the slot's byte count</div>
             <div><code>writeasset(h, src, i)</code> · <code>i</code> = count appends</div>
             <div><code>assetcount(h)</code> · <code>assetname(h, i, dst)</code> · <code>setassetname(h, i, name)</code></div>
-            <div><code>savecart(h)</code> asks to overwrite or copy; 1 if saved</div>
+            <div><code>savecart(h)</code> saves every section of the pick; 1 if saved</div>
+            <div><code>opensection(h, kind)</code> another section of the picked cart <span class="prov">PROPOSED</span></div>
+            <div><code>cartname(h, dst)</code> · <code>drawasset(h, i, x, y)</code> <span class="prov">PROPOSED</span></div>
+            <div><code>status(text)</code> system hint line at the bottom <span class="prov">PROPOSED</span></div>
             <div>Tiles slot: 64 pixel bytes + 1 flag byte <span class="prov">PROPOSED</span></div>
           </div>
         </div>

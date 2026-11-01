@@ -6,9 +6,26 @@ const ctx = canvas.getContext("2d");
 const img = ctx.createImageData(W, H);
 const out32 = new Uint32Array(img.data.buffer);
 const lut = new Uint32Array(256);
+// System status line (spec › Editor support, Proposed): drawn over the bottom 9 rows
+// at flush time, in the default palette, without touching the cart's framebuffer.
+let statusLine = "";
+const STATUS_Y = H - 9;
+const rgba = w => { const [r, g, b] = rgbOf(w); return (255 << 24 | b << 16 | g << 8 | r) >>> 0; };
 function flush() {
-  for (let i = 0; i < 256; i++) { const [r, g, b] = rgbOf(pal565[i]); lut[i] = (255 << 24 | b << 16 | g << 8 | r) >>> 0; }
+  for (let i = 0; i < 256; i++) lut[i] = rgba(pal565[i]);
   for (let i = 0; i < fb.length; i++) out32[i] = lut[fb[i]];
+  if (statusLine && !dialog && !halted) {
+    const bg = rgba(PAL_DEFAULT[0]), fg = rgba(PAL_DEFAULT[6]);
+    out32.fill(bg, STATUS_Y * W, H * W);
+    let x = 3;
+    for (let k = 0; k < statusLine.length && x < W; k++, x += CW) {
+      const ch = statusLine.charCodeAt(k), g = (ch >= 32 && ch <= 126 ? ch : 63) - 32;
+      for (let r = 0; r < CH; r++) {
+        const bits = GLYPHS[g * 9 + r];
+        for (let b = 0; b < 5; b++) if (bits & (1 << b) && x + b < W) out32[(STATUS_Y + r) * W + x + b] = fg;
+      }
+    }
+  }
   ctx.putImageData(img, 0, 0);
 }
 
@@ -137,7 +154,7 @@ function load() {
   stopAllVoices(); closeDialog(null, true);
   halted = null; vm = null; task = null; frameNo = 0;
   bbSample = 0; bbLastT = -1; bbVal = 128;
-  transparent = 0; resetPalette(); fb.fill(0);
+  transparent = 0; resetPalette(); fb.fill(0); statusLine = "";
   if (cart.sections.palette) pal565.set(cart.sections.palette.words);
   led.className = "led on"; ledtxt.textContent = "POWER";
   setTitle(cartTitle(cart));
@@ -147,6 +164,8 @@ function load() {
       pointer: cartPointer,
       sections: () => currentCart().sections,
       cartSections: id => findCart(id).sections,
+      cartTitle: id => { const c = findCart(id); return c ? cartTitle(c) : ""; },
+      setStatusLine: t => { statusLine = t.slice(0, 39); },
       audioFault: e => setStatus(`audio(t) fault${e.line ? `, line ${e.line}` : ""}: ${e.message} (audio is silent until the next reset)`, true, e.line)
     });
   } catch (e) { halt("load", e); return false; }
@@ -175,9 +194,10 @@ function openDialog(req) {
       items: shelf.carts.map(c => ({ label: cartTitle(c), value: c.id, note: `r${(c.sections[ASSET_KINDS[req.kind]] || { rev: 0 }).rev}` })),
       cancel: null, foot: "A choose   B cancel" };
   } else {
-    const c = findCart(req.handle.cartId);
+    const c = findCart(req.handle.pick.cartId);
     const t = c ? cartTitle(c) : "cart";
-    dialog = { req, title: `SAVE ${req.handle.kind.toUpperCase()} TO ${t.toUpperCase()}`, sel: 0, top: 0,
+    const what = [...new Set(req.handles.map(h => h.secName))].join(", ").toUpperCase();
+    dialog = { req, title: `SAVE ${what} TO ${t.toUpperCase()}`, sel: 0, top: 0,
       items: [{ label: `Overwrite ${t}`, value: "over" }, { label: "Save as a copy", value: "copy" }, { label: "Cancel", value: null }],
       cancel: null, foot: "A choose   B cancel" };
   }
@@ -196,24 +216,31 @@ function closeDialog(answer, silent) {
 function finishDialog(value) {
   const req = dialog.req;
   let answer = value;
-  if (req.type === "save") answer = value ? applySave(req.handle, value) : 0;
+  if (req.type === "save") answer = value ? applySave(req, value) : 0;
   closeDialog(answer);
 }
-function applySave(Hd, mode) {
-  let cart = findCart(Hd.cartId);
+function applySave(req, mode) {
+  const pick = req.handle.pick;
+  let cart = findCart(pick.cartId);
   if (!cart) return 0;
   if (mode === "copy") {
     const copy = { id: newId(), sampleId: null, source: retitle(cart.source, cartTitle(cart) + " copy"), sections: cloneSections(cart.sections) };
     shelf.carts.splice(shelf.carts.indexOf(cart) + 1, 0, copy);
-    cart = copy; Hd.cartId = copy.id;
+    cart = copy; pick.cartId = copy.id;      // later saves from this pick go to the copy
   }
-  const old = cart.sections[Hd.secName];
-  const sec = cloneSection(Hd.secName, Hd.sec);
-  sec.rev = (old ? old.rev : 0) + 1; Hd.sec.rev = sec.rev;
-  cart.sections[Hd.secName] = sec;
-  Hd.dirty = false;
+  // one write per section: "tiles" and "sprites" handles share the sprites section
+  const done = new Map();
+  for (const Hd of req.handles) {
+    if (done.has(Hd.secName)) { Hd.sec.rev = done.get(Hd.secName); Hd.dirty = false; continue; }
+    const old = cart.sections[Hd.secName];
+    const sec = cloneSection(Hd.secName, Hd.sec);
+    if (!sec) continue;
+    sec.rev = (old ? old.rev : 0) + 1; Hd.sec.rev = sec.rev; Hd.dirty = false;
+    cart.sections[Hd.secName] = sec;
+    done.set(Hd.secName, sec.rev);
+  }
   persistShelf(true); renderShelf();
-  shelfNote(`Saved ${Hd.kind} to “${cartTitle(cart)}” (revision ${sec.rev}).`);
+  shelfNote(`Saved ${[...done.keys()].join(" and ")} to “${cartTitle(cart)}”.`);
   return 1;
 }
 const ROW_H = 12, LIST_Y = 36, VISIBLE = 8;

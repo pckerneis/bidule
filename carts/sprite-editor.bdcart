@@ -2,7 +2,7 @@
 // @author Bidule samples
 // @id     sprite-editor
 
-// Edits the tile sheet of any cart on the shelf.
+// Edits the tile sheet of any cart on the shelf, and names its sprites.
 // Tap B to move between panels: canvas, sheet, palette, tools.
 // B + left/right: colour   B + up/down: tile   B + A: undo
 // The mouse works everywhere: click to draw, pick and choose.
@@ -19,6 +19,7 @@ const PALX = 104
 const PALY = 44
 const TOOLX = 104
 const TOOLY = 68
+const TOOLW = 33
 const FLAGX = 104
 const FLAGY = 98
 const SHX = 6
@@ -28,19 +29,34 @@ const SHROWS = 4
 const PITCH = 9
 const BG = DARK_BLUE
 
-const TOOL_NAMES[6][4] = {
+// tools 0-6, then flags 7-14
+const NTOOLS = 7
+const NITEMS = 15
+const TOOL_NAMES[7][4] = {
   "PEN ",
   "FILL",
   "PICK",
   "UNDO",
+  "NAME",
   "OPEN",
   "SAVE",
 }
 
+// name panel: 37 characters, then DEL and OK
+const CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
+const NCHARS = 37
+const NCELLS = 39
+const NPX = 14
+const NPY = 22
+const NCOLS = 10
+
 var h = -1
+var sh = -1
+var title[17]
 var px[65]
 var und[65]
 var tmp[65]
+var rec[4]
 var stk[64]
 var tile = 0
 var cx = 0
@@ -66,12 +82,31 @@ var seldrawn = -1
 var msg[48]
 var msgtime = 0
 
+// sprite name of the current tile
+var sslot = -1
+var sname[25]
+var other[25]
+
+// name panel
+var naming = 0
+var nm[25]
+var nlen = 0
+var nsel = 0
+
+// ---------- messages ----------
+
+fn say(text[]) {
+  copy(msg, text)
+  msgtime = 180
+}
+
 // ---------- tiles ----------
 
 fn load() {
   readasset(h, px, tile)
   copy(und, px)
   dirty = 0
+  find_sprite()
 }
 
 fn keep() {
@@ -105,6 +140,127 @@ fn scroll(dr, side) {
   wy = clamp(wy + dr, 0, 32 - SHROWS)
   if (side) { wx = SHCOLS - wx }
   redraw_sheet = 1
+}
+
+// ---------- sprites: a name for the current tile ----------
+
+// Finds the 1x1 sprite slot that shows the current tile.
+fn find_sprite() {
+  sslot = -1
+  sname[0] = 0
+  var n = assetcount(sh)
+  for (var i = 0; i < n; i++) {
+    if (readasset(sh, rec, i) == 4) {
+      if (rec[0] + rec[1] * 256 == tile && rec[2] == 1 && rec[3] == 1) {
+        sslot = i
+        assetname(sh, i, sname)
+        return
+      }
+    }
+  }
+}
+
+fn name_taken() {
+  var n = assetcount(sh)
+  for (var i = 0; i < n; i++) {
+    if (i != sslot) {
+      assetname(sh, i, other)
+      if (streq(other, nm)) { return 1 }
+    }
+  }
+  return 0
+}
+
+fn open_naming() {
+  copy(nm, sname)
+  nlen = 0
+  while (nm[nlen] != 0) { nlen++ }
+  nsel = 0
+  naming = 1
+}
+
+fn close_naming() {
+  naming = 0
+  redraw_all = 1
+}
+
+fn commit_name() {
+  if (nlen > 0 && nm[0] >= '0' && nm[0] <= '9') {
+    say("A name can't start with a digit")
+    return
+  }
+  if (nlen > 0 && name_taken()) {
+    say("Another sprite already has that name")
+    return
+  }
+  if (sslot < 0) {
+    if (nlen == 0) {
+      close_naming()
+      return
+    }
+    rec[0] = tile % 256
+    rec[1] = tile / 256
+    rec[2] = 1
+    rec[3] = 1
+    writeasset(sh, rec, assetcount(sh))
+    sslot = assetcount(sh) - 1
+  }
+  setassetname(sh, sslot, nm)
+  copy(sname, nm)
+  unsaved = 1
+  if (nlen > 0) {
+    fmt(msg, "Tile {tile} is Sprites.{nm}")
+  } else {
+    fmt(msg, "Name removed")
+  }
+  msgtime = 180
+  close_naming()
+}
+
+fn name_key(k) {
+  if (k < NCHARS) {
+    if (nlen < 24) {
+      nm[nlen] = CHARS[k]
+      nlen++
+      nm[nlen] = 0
+    }
+  } else if (k == NCHARS) {
+    if (nlen > 0) {
+      nlen--
+      nm[nlen] = 0
+    }
+  } else {
+    commit_name()
+  }
+}
+
+fn name_input() {
+  if (btnp(BTN_B)) {
+    bused = 1
+    close_naming()
+    return
+  }
+  if (rp[BTN_LEFT])  { nsel = (nsel + NCELLS - 1) % NCELLS }
+  if (rp[BTN_RIGHT]) { nsel = (nsel + 1) % NCELLS }
+  if (rp[BTN_UP])    { nsel = (nsel + NCELLS - NCOLS) % NCELLS }
+  if (rp[BTN_DOWN])  { nsel = (nsel + NCOLS) % NCELLS }
+  if (btnp(BTN_A)) { name_key(nsel) }
+  if (haspointer()) {
+    var b = mouseb() & 1
+    var pressed = b && !mprev
+    mprev = b
+    if (pressed) {
+      var mx = mousex()
+      var my = mousey()
+      if (inside(mx, my, NPX + 6, NPY + 34, NCOLS * 20, 48)) {
+        var k = (my - NPY - 34) / 12 * NCOLS + (mx - NPX - 6) / 20
+        if (k < NCELLS) {
+          nsel = k
+          name_key(k)
+        }
+      }
+    }
+  }
 }
 
 // ---------- drawing on the tile ----------
@@ -184,11 +340,12 @@ fn open() {
   var picked = pickcart("tiles")
   redraw_all = 1
   if (picked < 0) {
-    fmt(msg, "No cart opened")
-    msgtime = 180
+    say("No cart opened")
     return
   }
   h = picked
+  sh = opensection(h, "sprites")
+  cartname(h, title)
   tile = 0
   wx = 0
   wy = 0
@@ -202,16 +359,16 @@ fn save() {
   keep()
   if (savecart(h)) {
     unsaved = 0
-    fmt(msg, "Saved")
+    cartname(h, title)
+    say("Saved")
   } else {
-    fmt(msg, "Not saved")
+    say("Not saved")
   }
-  msgtime = 180
   redraw_all = 1
 }
 
 fn act(i) {
-  if (i != 4) { open_armed = 0 }
+  if (i != 5) { open_armed = 0 }
   if (i < 3) {
     tool = i
     return
@@ -221,6 +378,10 @@ fn act(i) {
     return
   }
   if (i == 4) {
+    open_naming()
+    return
+  }
+  if (i == 5) {
     if ((unsaved || dirty) && !open_armed) {
       open_armed = 1
       fmt(msg, "Unsaved! OPEN again to discard")
@@ -231,11 +392,11 @@ fn act(i) {
     open()
     return
   }
-  if (i == 5) {
+  if (i == 6) {
     save()
     return
   }
-  px[64] = px[64] ^ (1 << (i - 6))
+  px[64] = px[64] ^ (1 << (i - NTOOLS))
   dirty = 1
 }
 
@@ -274,20 +435,22 @@ fn navigate() {
       if (btnp(BTN_A)) { focus = Focus.CANVAS }
     }
     Focus.TOOLS {
-      if (rp[BTN_LEFT])  { toolsel = (toolsel + 13) % 14 }
-      if (rp[BTN_RIGHT]) { toolsel = (toolsel + 1) % 14 }
+      if (rp[BTN_LEFT])  { toolsel = (toolsel + NITEMS - 1) % NITEMS }
+      if (rp[BTN_RIGHT]) { toolsel = (toolsel + 1) % NITEMS }
       if (rp[BTN_UP]) {
-        if (toolsel >= 6) {
-          toolsel = 3
+        if (toolsel >= NTOOLS) {
+          toolsel = 4
+        } else if (toolsel >= 4) {
+          toolsel = toolsel - 4
         } else {
-          toolsel = (toolsel + 3) % 6
+          toolsel = NTOOLS
         }
       }
       if (rp[BTN_DOWN]) {
-        if (toolsel >= 3 && toolsel < 6) {
-          toolsel = 6
-        } else if (toolsel < 3) {
-          toolsel = toolsel + 3
+        if (toolsel < 4) {
+          toolsel = min(toolsel + 4, NTOOLS - 1)
+        } else if (toolsel < NTOOLS) {
+          toolsel = NTOOLS
         } else {
           toolsel = 0
         }
@@ -321,12 +484,15 @@ fn mouse() {
   if (inside(mx, my, PALX, PALY, 88, 18)) {
     colour = (my - PALY) / 9 * 8 + (mx - PALX) / 11
     focus = Focus.PALETTE
-  } else if (inside(mx, my, TOOLX, TOOLY, 132, 26)) {
-    toolsel = (my - TOOLY) / 13 * 3 + (mx - TOOLX) / 44
-    focus = Focus.TOOLS
-    act(toolsel)
+  } else if (inside(mx, my, TOOLX, TOOLY, 4 * TOOLW, 26)) {
+    var t = (my - TOOLY) / 13 * 4 + (mx - TOOLX) / TOOLW
+    if (t < NTOOLS) {
+      toolsel = t
+      focus = Focus.TOOLS
+      act(t)
+    }
   } else if (inside(mx, my, FLAGX + 36, FLAGY, 80, 9)) {
-    toolsel = 6 + (mx - FLAGX - 36) / 10
+    toolsel = NTOOLS + (mx - FLAGX - 36) / 10
     focus = Focus.TOOLS
     act(toolsel)
   } else if (inside(mx, my, SHX, SHY, SHCOLS * PITCH, SHROWS * PITCH)) {
@@ -355,6 +521,11 @@ update() {
   if (h < 0) {
     if (btnp(BTN_A)) { open() }
     mouse()
+    bdown = btn(BTN_B)
+    return
+  }
+  if (naming) {
+    name_input()
     bdown = btn(BTN_B)
     return
   }
@@ -392,14 +563,14 @@ update() {
 
 fn draw_tile(t, x, y) {
   if (t == tile) {
-    copy(tmp, px)
-  } else {
-    readasset(h, tmp, t)
-  }
-  for (var j = 0; j < 8; j++) {
-    for (var i = 0; i < 8; i++) {
-      pset(x + i, y + j, tmp[j * 8 + i])
+    for (var j = 0; j < 8; j++) {
+      for (var i = 0; i < 8; i++) {
+        pset(x + i, y + j, px[j * 8 + i])
+      }
     }
+  } else {
+    rectfill(x, y, 8, 8, BLACK)
+    drawasset(h, t, x, y)
   }
 }
 
@@ -425,8 +596,6 @@ fn draw_sheet() {
 
 fn draw_static() {
   cls(BG)
-  rectfill(0, 0, SCREEN_W, 11, BLACK)
-  print("SPRITE EDITOR", 3, 1, YELLOW)
   rectfill(CX - 2, CY - 2, 8 * Z + 3, 8 * Z + 3, BLACK)
   print("COLOUR", PALX, PALY - 10, GREY)
   print("FLAGS", FLAGX, FLAGY + 1, GREY)
@@ -444,19 +613,68 @@ fn frame_around(x, y, w, hh, on) {
   rect(x, y, w, hh, on ? YELLOW : BG)
 }
 
+fn draw_naming(frame) {
+  rectfill(NPX, NPY, 212, 90, BLACK)
+  rect(NPX, NPY, 212, 90, YELLOW)
+  print("NAME TILE {tile} AS A SPRITE", NPX + 6, NPY + 4, YELLOW)
+  rectfill(NPX + 6, NPY + 16, 200, 11, DARK_GREY)
+  var x = print("Sprites.", NPX + 9, NPY + 17, GREY)
+  x = print(nm, x, NPY + 17, WHITE)
+  if ((frame / 15) % 2 == 0) { rectfill(x, NPY + 17, 1, 8, WHITE) }
+  for (var k = 0; k < NCELLS; k++) {
+    var cx2 = NPX + 6 + (k % NCOLS) * 20
+    var cy2 = NPY + 34 + (k / NCOLS) * 12
+    var bg = DARK_GREY
+    if (k >= NCHARS) { bg = BLUE }
+    if (k == nsel) { bg = YELLOW }
+    rectfill(cx2, cy2, 18, 10, bg)
+    var fg = WHITE
+    if (k == nsel) { fg = BLACK }
+    if (k < NCHARS) {
+      print("{CHARS[k]:c}", cx2 + 7, cy2 + 1, fg)
+    } else if (k == NCHARS) {
+      print("DEL", cx2 + 1, cy2 + 1, fg)
+    } else {
+      print("OK", cx2 + 4, cy2 + 1, fg)
+    }
+  }
+}
+
 draw(frame) {
+  rectfill(0, 0, SCREEN_W, 11, BLACK)
   if (h < 0) {
     if (redraw_all) {
       cls(BG)
-      rectfill(0, 0, SCREEN_W, 11, BLACK)
-      print("SPRITE EDITOR", 3, 1, YELLOW)
       redraw_all = 0
     }
+    rectfill(0, 0, SCREEN_W, 11, BLACK)
+    print("SPRITE EDITOR", 3, 1, YELLOW)
     rectfill(0, 60, SCREEN_W, 40, BG)
     print("Press A to open a cart", 54, 70, WHITE)
-    if (msgtime > 0) { print(msg, (SCREEN_W - textwidth(msg)) / 2, 84, ORANGE) }
+    if (msgtime > 0) {
+      status(msg)
+    } else {
+      status("A: open a cart")
+    }
     return
   }
+
+  // top bar: which cart, which tile
+  var tx0 = print("SPRITES", 3, 1, YELLOW)
+  tx0 = print(title, tx0 + 6, 1, WHITE)
+  if (unsaved || dirty) { print("*", tx0 + 2, 1, ORANGE) }
+  print("TILE {tile:04}", 183, 1, WHITE)
+
+  if (naming) {
+    draw_naming(frame)
+    if (msgtime > 0) {
+      status(msg)
+    } else {
+      status("Arrows: letter  A: type  B: cancel")
+    }
+    return
+  }
+
   if (redraw_all) { draw_static() }
   if (redraw_sheet) { draw_sheet() }
   if (thumb) {
@@ -467,11 +685,6 @@ draw(frame) {
     }
     thumb = 0
   }
-
-  // top bar
-  rectfill(120, 0, 120, 11, BLACK)
-  print("TILE {tile:04}", 180, 1, WHITE)
-  if (unsaved || dirty) { print("UNSAVED", 130, 1, ORANGE) }
 
   // canvas: clear it first so the previous cursor outline disappears
   rectfill(CX - 1, CY - 1, 8 * Z + 1, 8 * Z + 1, BLACK)
@@ -488,7 +701,7 @@ draw(frame) {
   }
   frame_around(CX - 4, CY - 4, 8 * Z + 7, 8 * Z + 7, focus == Focus.CANVAS)
 
-  // previews at 1x and 2x
+  // previews at 1x and 2x, sheet position and sprite name
   rectfill(PVX - 1, PVY - 1, 28, 18, BLACK)
   for (var y = 0; y < 8; y++) {
     for (var x = 0; x < 8; x++) {
@@ -496,9 +709,13 @@ draw(frame) {
       rectfill(PVX + 10 + x * 2, PVY + y * 2, 2, 2, px[y * 8 + x])
     }
   }
-  rectfill(140, 14, 96, 22, BG)
-  print("{tile % 32},{tile / 32} in sheet", 140, 16, GREY)
-  print("Colour {colour}", 140, 26, WHITE)
+  rectfill(134, 14, 104, 22, BG)
+  print("Tile {tile % 32},{tile / 32}", 134, 15, GREY)
+  if (sname[0] != 0) {
+    print(sname, 134, 25, YELLOW)
+  } else {
+    print("no sprite name", 134, 25, DARK_GREY)
+  }
 
   // palette
   for (var i = 0; i < 16; i++) {
@@ -515,19 +732,19 @@ draw(frame) {
   frame_around(PALX - 3, PALY - 3, 94, 24, focus == Focus.PALETTE)
 
   // tools
-  for (var i = 0; i < 6; i++) {
-    var tx = TOOLX + (i % 3) * 44
-    var ty = TOOLY + (i / 3) * 13
+  for (var i = 0; i < NTOOLS; i++) {
+    var tx = TOOLX + (i % 4) * TOOLW
+    var ty = TOOLY + (i / 4) * 13
     var bg = DARK_GREY
     if (i < 3 && i == tool) { bg = BLUE }
-    rectfill(tx, ty, 42, 11, bg)
+    rectfill(tx, ty, TOOLW - 2, 11, bg)
     var fg = WHITE
     if (focus == Focus.TOOLS && toolsel == i) { fg = YELLOW }
-    print(TOOL_NAMES[i], tx + 9, ty + 1, fg)
+    print(TOOL_NAMES[i], tx + 3, ty + 1, fg)
     if (focus == Focus.TOOLS && toolsel == i) {
-      rect(tx - 1, ty - 1, 44, 13, YELLOW)
+      rect(tx - 1, ty - 1, TOOLW, 13, YELLOW)
     } else {
-      rect(tx - 1, ty - 1, 44, 13, BG)
+      rect(tx - 1, ty - 1, TOOLW, 13, BG)
     }
   }
 
@@ -537,7 +754,7 @@ draw(frame) {
     var on = (px[64] >> i) & 1
     rectfill(fx, FLAGY, 9, 9, on ? ORANGE : DARK_GREY)
     print("{i}", fx + 2, FLAGY, on ? BLACK : GREY)
-    if (focus == Focus.TOOLS && toolsel == 6 + i) {
+    if (focus == Focus.TOOLS && toolsel == NTOOLS + i) {
       rect(fx - 1, FLAGY - 1, 11, 11, YELLOW)
     } else {
       rect(fx - 1, FLAGY - 1, 11, 11, BG)
@@ -559,16 +776,15 @@ draw(frame) {
   rectfill(156, 114, 80, 11, BG)
   print("ROWS {wy}-{wy + SHROWS - 1}", 156, 116, GREY)
 
-  // status line
-  rectfill(0, 151, SCREEN_W, 9, BLACK)
+  // the system status line shows hints and messages
   if (msgtime > 0) {
-    print(msg, 3, 151, ORANGE)
+    status(msg)
   } else {
     switch (focus) {
-      Focus.CANVAS { print("A draw  B tap: next panel  B+A undo", 3, 151, GREY) }
-      Focus.SHEET { print("Arrows: tile   A: back to canvas", 3, 151, GREY) }
-      Focus.PALETTE { print("Arrows: colour   A: back to canvas", 3, 151, GREY) }
-      Focus.TOOLS { print("Arrows: choose   A: use   B: next", 3, 151, GREY) }
+      Focus.CANVAS { status("A draw  B tap: next panel  B+A undo") }
+      Focus.SHEET { status("Arrows: tile   A: back to canvas") }
+      Focus.PALETTE { status("Arrows: colour   A: back to canvas") }
+      Focus.TOOLS { status("Arrows: choose   A: use   B: next") }
     }
   }
 }

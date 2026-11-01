@@ -12,7 +12,7 @@ const SRC_EDITOR = SAMPLE_SOURCES["sprites"];
 // FNV-1a over the source text: lets the shelf update untouched sample carts
 function srcHash(s) { let h = 0x811c9dc5; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; } return h; }
 // sources of earlier sample releases, by hash, so unedited copies get the new version
-const OLD_SAMPLE_HASHES = { sprites: [3151107878] };
+const OLD_SAMPLE_HASHES = { sprites: [3151107878, 4017827706], peek: [2667779840] };
 
 function makeSampleCart(id) {
   const sec = emptySections();

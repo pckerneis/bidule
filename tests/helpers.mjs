@@ -21,10 +21,13 @@ export function makeHarness(core, runningId, extraCarts = []) {
   for (const c of extraCarts) carts[c.id] = c;
   const pointer = { x: 0, y: 0, b: 0 };
   let running = carts[runningId];
+  const status = { text: "" };
   const host = {
     debug: true, pointer,
     sections: () => running.sections,
     cartSections: id => carts[id].sections,
+    cartTitle: id => (/^\/\/\s*@title\s+(.+)$/m.exec(carts[id].source) || [, "Untitled"])[1].trim(),
+    setStatusLine: t => { status.text = t; },
     audioFault: e => { throw e; },
   };
   const vmi = core.makeVM(running.source, host);
@@ -37,16 +40,21 @@ export function makeHarness(core, runningId, extraCarts = []) {
       const a = answers.shift();
       if (r.value.type === "save") {
         if (a) {
-          const Hd = r.value.handle, c = carts[Hd.cartId];
-          c.sections[Hd.secName] = core.cloneSection(Hd.secName, Hd.sec);
-          c.sections[Hd.secName].rev++;
+          const c = carts[r.value.handle.pick.cartId], seen = new Set();
+          for (const Hd of r.value.handles) {
+            if (seen.has(Hd.secName)) continue;
+            seen.add(Hd.secName);
+            const rev = (c.sections[Hd.secName]?.rev ?? 0) + 1;
+            c.sections[Hd.secName] = core.cloneSection(Hd.secName, Hd.sec);
+            c.sections[Hd.secName].rev = rev;
+          }
         }
         r = task.next(a ? 1 : 0);
       } else r = task.next(a ?? null);
     }
   }
   return {
-    carts, pointer, vm: vmi, asked,
+    carts, pointer, vm: vmi, asked, status,
     init(answers = []) { drain(vmi.initTask(), answers); },
     frame(input = 0, answers = []) { drain(vmi.frameTask(frameNo++, input), answers); },
   };
@@ -57,7 +65,7 @@ export const BTN = { L: 1, R: 2, U: 4, D: 8, A: 16, B: 32 };
 /** Runs a cart from source alone (no assets) and returns the console core and VM. */
 export function runSource(core, source, { frames = 1, debug = true } = {}) {
   const sections = core.emptySections();
-  const v = core.makeVM(source, { debug, pointer: { x: 0, y: 0, b: 0 }, sections: () => sections, cartSections: () => sections, audioFault: e => { throw e; } });
+  const v = core.makeVM(source, { debug, pointer: { x: 0, y: 0, b: 0 }, sections: () => sections, cartSections: () => sections, cartTitle: () => "Test", setStatusLine: () => {}, audioFault: e => { throw e; } });
   const drain = t => { const r = t.next(); if (!r.done) throw new Error("unexpected system dialog"); };
   drain(v.initTask());
   for (let f = 0; f < frames; f++) drain(v.frameTask(f, 0));

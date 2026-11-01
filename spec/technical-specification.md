@@ -983,6 +983,6 @@ The hardware is the reference: a cartridge MUST behave the same on the emulator 
 
 - It interprets source directly: no compiler, bytecode or verifier. Compile-time errors appear when the line first runs.
 - Asset sections, the editing API, system dialogs, the pointer and Monogram text are in. Music assets, emptying a slot, and exporting or importing carts are missing.
-- Int-to-fix promotion in `? :` and the editor-support calls above are missing.
+- Int-to-fix promotion in `? :` is missing. The editor-support calls above are implemented, and the Sprite Editor uses all four.
 - `rnd` uses the browser's generator, so sequences are not reproducible.
 - The frame budget is 5,000,000 interpreter steps, not an instruction count.

@@ -19,7 +19,6 @@ var cy = 0
 var colour = 7
 var dirty = 0
 var unsaved = 0
-var cartname[32]
 var msg[40]
 
 fn load() {
