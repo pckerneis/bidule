@@ -1,0 +1,42 @@
+// @title  Blink
+// @author example
+// @id     blink-v2
+
+const SIZE = 8
+const HALF = SIZE / 2
+const COLOURS[] = {RED, ORANGE, YELLOW, GREEN, BLUE, MAGENTA}
+
+var x: fix = SCREEN_W / 2
+var y: fix = SCREEN_H / 2
+var dx: fix = 1.5
+var dy: fix = 1.0
+var col = 0
+
+audio var pitch = 4
+
+fn bounce(pos: fix, vel: fix, limit): fix {
+  if (pos < HALF || pos > limit - HALF) {
+    return -vel
+  }
+  return vel
+}
+
+update() {
+  x += dx
+  y += dy
+  dx = bounce(x, dx, SCREEN_W)
+  dy = bounce(y, dy, SCREEN_H)
+  if (btnp(BTN_A)) {
+    col = (col + 1) % COLOURS.length
+  }
+}
+
+draw(frame) {
+  cls(BLACK)
+  rectfill(x - HALF, y - HALF, SIZE, SIZE, COLOURS[col])
+  print(frame, 2, 2, WHITE)
+}
+
+audio(t) {
+  return (t * pitch) & 255
+}

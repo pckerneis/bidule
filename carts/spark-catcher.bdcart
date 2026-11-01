@@ -1,0 +1,130 @@
+// @title  Spark Catcher
+// @author Bidule samples
+// @id     spark-catcher
+
+// Uses this cart's own assets: Sprites.PLAYER, Sprites.SPARK_A/B,
+// Maps.BACKDROP and Sounds.CATCH/DASH/OVER. Open them with Tile Peek.
+
+const SIZE = 8
+const ROUND_FRAMES = 30 * 60
+
+enum State { TITLE, PLAYING, GAME_OVER }
+
+record Vec2 { x: fix, y: fix }
+record Spark { pos: Vec2, phase }
+
+var state = State.TITLE
+var player: Vec2
+var sparks: Spark[6]
+var score = 0
+var best = 0
+var timer = 0
+var flash = 0
+
+fn place(s: Spark) {
+  s.pos.x = 8 + rnd(SCREEN_W - 16)
+  s.pos.y = 20 + rnd(SCREEN_H - 32)
+  s.phase = rnd(60)
+}
+
+fn start() {
+  player.x = SCREEN_W / 2 - SIZE / 2
+  player.y = SCREEN_H / 2
+  score = 0
+  timer = ROUND_FRAMES
+  for (var i = 0; i < sparks.length; i++) {
+    place(sparks[i])
+  }
+  state = State.PLAYING
+}
+
+fn step() {
+  var speed: fix = 1.5
+  if (btn(BTN_A)) { speed = 3.0 }
+  if (btnp(BTN_A)) { play(Sounds.DASH) }
+  if (btn(BTN_LEFT))  { player.x -= speed }
+  if (btn(BTN_RIGHT)) { player.x += speed }
+  if (btn(BTN_UP))    { player.y -= speed }
+  if (btn(BTN_DOWN))  { player.y += speed }
+  player.x = clamp(player.x, 0, SCREEN_W - SIZE)
+  player.y = clamp(player.y, 12, SCREEN_H - SIZE)
+
+  for (var i = 0; i < sparks.length; i++) {
+    sparks[i].phase++
+    var dx = int(sparks[i].pos.x - player.x) - SIZE / 2
+    var dy = int(sparks[i].pos.y - player.y) - SIZE / 2
+    if (abs(dx) < 7 && abs(dy) < 7) {
+      score++
+      flash = 6
+      play(Sounds.CATCH)
+      place(sparks[i])
+    }
+  }
+  if (flash > 0) { flash-- }
+  timer--
+  if (timer == 0) {
+    best = max(best, score)
+    play(Sounds.OVER)
+    state = State.GAME_OVER
+  }
+}
+
+fn center(text[], y, c) {
+  print(text, (SCREEN_W - textwidth(text)) / 2, y, c)
+}
+
+init() {
+  for (var i = 0; i < sparks.length; i++) {
+    place(sparks[i])
+  }
+}
+
+update() {
+  switch (state) {
+    State.TITLE, State.GAME_OVER {
+      if (btnp(BTN_A)) { start() }
+    }
+    State.PLAYING { step() }
+  }
+}
+
+draw(frame) {
+  cls(DARK_BLUE)
+  map(Maps.BACKDROP, 0, 0, 0, 16, 30, 18)
+
+  for (var i = 0; i < sparks.length; i++) {
+    var s = (sparks[i].phase / 8) % 2 == 0 ? Sprites.SPARK_A : Sprites.SPARK_B
+    spr(s, int(sparks[i].pos.x) - 3, int(sparks[i].pos.y) - 3)
+  }
+
+  if (state == State.PLAYING) {
+    if (flash > 0) {
+      rectfill(player.x, player.y, SIZE, SIZE, WHITE)
+    } else {
+      spr(Sprites.PLAYER, player.x, player.y)
+    }
+  }
+
+  rectfill(0, 0, SCREEN_W, 11, BLACK)
+  print("SPARKS {score:02}", 3, 1, YELLOW)
+  var w = textwidth("TIME {timer / 60:02}")
+  print("TIME {timer / 60:02}", SCREEN_W - w - 3, 1, GREY)
+
+  switch (state) {
+    State.TITLE {
+      rectfill(40, 56, 160, 44, BLACK)
+      rect(40, 56, 160, 44, YELLOW)
+      center("SPARK CATCHER", 64, YELLOW)
+      center("Hold A to dash", 76, GREY)
+      if ((frame / 20) % 2 == 0) { center("Press A to start", 86, WHITE) }
+    }
+    State.GAME_OVER {
+      rectfill(40, 56, 160, 44, BLACK)
+      rect(40, 56, 160, 44, RED)
+      center("TIME UP", 62, RED)
+      var t = textwidth("{score} sparks - best {best}")
+      print("{score} sparks - best {best}", (SCREEN_W - t) / 2, 74, WHITE)
+      center("Press A to play again", 86, GREY)
+    }
+  }
+}

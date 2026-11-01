@@ -1,0 +1,158 @@
+<title>Bidule 01</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Silkscreen&family=IBM+Plex+Sans+Condensed:wght@400;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* @styles */
+</style>
+
+<div class="stage">
+  <div class="left">
+    <div class="device" id="device">
+      <div class="bezel" id="bezel">
+        <div class="bezel-top">
+          <span class="led on" id="led"><i></i><span id="ledtxt">POWER</span></span>
+          <span class="ttl" id="bezelTitle"></span>
+          <span class="mode-tag" id="modeTag">DEBUG</span>
+        </div>
+        <div class="screen-wrap"><canvas id="screen" width="240" height="160" aria-label="Console screen"></canvas></div>
+      </div>
+      <div class="brand"><b>BIDULE 01</b><span>OPEN FANTASY CONSOLE · 240×160</span></div>
+      <div class="controls">
+        <div class="dpad" role="group" aria-label="Direction pad">
+          <button class="up" data-b="2" aria-label="Up"></button>
+          <button class="left" data-b="0" aria-label="Left"></button>
+          <span class="hub"></span>
+          <button class="right" data-b="1" aria-label="Right"></button>
+          <button class="down" data-b="3" aria-label="Down"></button>
+        </div>
+        <div class="ab" role="group" aria-label="Action buttons">
+          <div class="wrap b"><button data-b="5" aria-label="B button"></button><small>B</small></div>
+          <div class="wrap a"><button data-b="4" aria-label="A button"></button><small>A</small></div>
+        </div>
+      </div>
+      <div class="sys">
+        <div class="pill"><button id="resetBtn" aria-label="Reset"></button><small>RESET</small></div>
+      </div>
+    </div>
+
+    <div class="shelf">
+      <label for="cartSel">Cart</label>
+      <select id="cartSel" class="tool"></select>
+      <button class="tool" id="newCartBtn">New cart</button>
+      <button class="tool" id="dupCartBtn">Duplicate</button>
+      <button class="tool" id="delCartBtn">Delete</button>
+      <span class="shelf-note" id="shelfNote" role="status"></span>
+    </div>
+
+    <div class="side">
+      <dl class="keys">
+        <dt><kbd>←↑↓→</kbd> <kbd>WASD</kbd></dt><dd>D-pad · BTN_LEFT… BTN_DOWN</dd>
+        <dt><kbd>X</kbd> <kbd>K</kbd></dt><dd>A · BTN_A</dd>
+        <dt><kbd>Z</kbd> <kbd>J</kbd></dt><dd>B · BTN_B</dd>
+        <dt><kbd>R</kbd></dt><dd>Reset the cartridge</dd>
+        <dt><kbd>M</kbd></dt><dd>Sound on or off</dd>
+        <dt>Mouse</dt><dd>Pointer on the screen (mousex, mousey, mouseb)</dd>
+      </dl>
+      <div class="chips">
+        <button class="chip" id="soundBtn" aria-pressed="true">Sound on</button>
+        <button class="chip" id="toggleCode" aria-expanded="false" aria-controls="editor">Edit code</button>
+      </div>
+    </div>
+  </div>
+
+  <section class="editor" id="editor" hidden aria-label="Cartridge source">
+    <div class="ed-head">
+      <h2>CART · <b id="cartName">—</b></h2>
+      <div class="tools">
+        <button class="tool" id="restoreBtn" hidden>Restore sample</button>
+        <select class="tool" id="modeSel" aria-label="Error mode">
+          <option value="debug">Debug mode</option>
+          <option value="release">Release mode</option>
+        </select>
+        <button class="tool run" id="runBtn" title="Ctrl+Enter">Run ▸</button>
+      </div>
+    </div>
+    <div class="code-wrap" id="codeWrap">
+      <div class="gutter" id="gutter" aria-hidden="true">1</div>
+      <textarea id="code" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="Cartridge source (.bdcart)"></textarea>
+    </div>
+    <div class="status" id="status"><span id="statusText">Ctrl+Enter runs the cartridge. Edits stay in this browser.</span></div>
+    <details class="ref">
+      <summary>Language and API reference</summary>
+      <div class="ref-body">
+        <p>Carts follow the Bidule 01 technical specification. Each cart holds its source plus asset sections (sprite sheet, maps, sounds, palette) laid out as the spec defines. This emulator interprets source directly; checks the spec places at compile time are reported when the line first runs.</p>
+        <div>
+          <h3>LIFECYCLE</h3>
+          <div class="ref-grid">
+            <div><code>init()</code> once after load</div>
+            <div><code>update(frame, input)</code> every frame, 60 Hz</div>
+            <div><code>draw(frame, input)</code> after update</div>
+            <div><code>audio(t)</code> bytebeat at 8 kHz, returns 0–255</div>
+          </div>
+        </div>
+        <div>
+          <h3>DRAWING <span class="prov">PROPOSED</span></h3>
+          <div class="ref-grid">
+            <div><code>cls(c)</code> · <code>pset(x, y, c)</code> · <code>pget(x, y)</code></div>
+            <div><code>line(x0, y0, x1, y1, c)</code></div>
+            <div><code>rect</code> / <code>rectfill(x, y, w, h, c)</code></div>
+            <div><code>circ</code> / <code>circfill(x, y, r, c)</code></div>
+            <div><code>spr(Sprites.HERO, x, y)</code> · index set by <code>palt</code> is skipped</div>
+            <div><code>map(Maps.LEVEL1, cx, cy, x, y, w, h)</code> · tile 0 skipped</div>
+            <div><code>Maps.LEVEL1[ty][tx]</code> reads a cell · <code>fget(tile, flag)</code></div>
+            <div><code>setpal(i, r, g, b)</code> · <code>getpal(i, chan)</code> · <code>palt(i)</code></div>
+          </div>
+        </div>
+        <div>
+          <h3>TEXT</h3>
+          <div class="ref-grid">
+            <div><code>print(text, x, y[, c])</code> returns x after</div>
+            <div><code>textwidth(text)</code> · <code>fmt(dst, text)</code></div>
+            <div><code>"Score {score:04}"</code> · <code>{v:.1}</code> <code>{n:x}</code> <code>{c:c}</code></div>
+            <div>6×9 cell, 40×17 grid <span class="prov">STAND-IN FONT FOR MONOGRAM</span></div>
+          </div>
+        </div>
+        <div>
+          <h3>INPUT AND MATHS</h3>
+          <div class="ref-grid">
+            <div><code>btn(BTN_A)</code> held · <code>btnp(BTN_A)</code> just pressed</div>
+            <div><code>haspointer()</code> · <code>mousex()</code> <code>mousey()</code> · <code>mouseb()</code> bit 0 left, 1 right</div>
+            <div><code>sin cos</code> (degrees) <code>atan2 sqrt</code></div>
+            <div><code>int round frac abs min max clamp</code> · <code>rnd(n)</code></div>
+            <div><code>copy(dst, src)</code> <code>streq(a, b)</code> <code>arreq(a, b, n)</code></div>
+          </div>
+        </div>
+        <div>
+          <h3>SOUND</h3>
+          <div class="ref-grid">
+            <div><code>play(Sounds.JUMP)</code> or a <code>const S: Sound = { … }</code></div>
+            <div>Fields: <code>wave from to time vol duty attack release notes step</code></div>
+            <div><code>play(s[, v])</code> <code>stop(v)</code> <code>stopall()</code> <code>playing(v)</code></div>
+            <div><code>cue(n)</code> · <code>cuecount(n)</code> inside audio(t)</div>
+          </div>
+        </div>
+        <div>
+          <h3>EDITING API</h3>
+          <div class="ref-grid">
+            <div><code>pickcart(kind)</code> opens the cart picker; handle or −1</div>
+            <div>Kinds: <code>"tiles" "sprites" "maps" "sounds" "palette"</code></div>
+            <div><code>readasset(h, dst, i)</code> returns the slot's byte count</div>
+            <div><code>writeasset(h, src, i)</code> · <code>i</code> = count appends</div>
+            <div><code>assetcount(h)</code> · <code>assetname(h, i, dst)</code> · <code>setassetname(h, i, name)</code></div>
+            <div><code>savecart(h)</code> asks to overwrite or copy; 1 if saved</div>
+            <div>Tiles slot: 64 pixel bytes + 1 flag byte <span class="prov">PROPOSED</span></div>
+          </div>
+        </div>
+        <div>
+          <h3>DEFAULT PALETTE · NAMED CONSTANTS</h3>
+          <div class="pal" id="pal"></div>
+        </div>
+      </div>
+    </details>
+  </section>
+</div>
+
+<script>
+/* @script */
+</script>

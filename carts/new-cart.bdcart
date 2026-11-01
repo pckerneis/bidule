@@ -1,0 +1,13 @@
+// @title  New cart
+// @author me
+
+init() {
+}
+
+update() {
+}
+
+draw(frame) {
+  cls(BLACK)
+  print("Hello, Bidule!", 4, 4)
+}

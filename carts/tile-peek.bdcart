@@ -1,0 +1,148 @@
+// @title  Tile Peek
+// @author Bidule samples
+// @id     tile-peek
+
+// A minimal tile editor that exercises the editing API.
+// A: paint   B + left/right: tile   B + up/down: colour
+// B + A: save (overwrite or copy)   Mouse: paint, pick colour
+
+const ZOOM = 13
+const OX = 6
+const OY = 16
+const PX = 120
+
+var h = -1
+var px[65]            // a "tiles" slot: 64 pixels + 1 flag byte
+var tile = 0
+var cx = 0
+var cy = 0
+var colour = 7
+var dirty = 0
+var unsaved = 0
+var cartname[32]
+var msg[40]
+
+fn load() {
+  readasset(h, px, tile)
+  dirty = 0
+}
+
+fn keep() {
+  if (dirty) {
+    writeasset(h, px, tile)
+    dirty = 0
+    unsaved = 1
+  }
+}
+
+fn go(t) {
+  keep()
+  tile = (t + 1024) % 1024
+  load()
+}
+
+fn open() {
+  var picked = pickcart("tiles")
+  if (picked < 0) {
+    fmt(msg, "No cart picked")
+    return
+  }
+  h = picked
+  tile = 0
+  unsaved = 0
+  load()
+  fmt(msg, "{assetcount(h)} tiles")
+}
+
+fn paint(x, y) {
+  if (px[y * 8 + x] != colour) {
+    px[y * 8 + x] = colour
+    dirty = 1
+  }
+}
+
+fn pointer() {
+  if (!haspointer() || !(mouseb() & 1)) { return }
+  var mx = mousex()
+  var my = mousey()
+  if (mx >= OX && my >= OY && mx < OX + 8 * ZOOM && my < OY + 8 * ZOOM) {
+    cx = (mx - OX) / ZOOM
+    cy = (my - OY) / ZOOM
+    paint(cx, cy)
+  }
+  if (my >= 70 && my < 80 && mx >= PX && mx < PX + 16 * 7) {
+    colour = (mx - PX) / 7
+  }
+}
+
+update() {
+  if (h < 0) {
+    if (btnp(BTN_A)) { open() }
+    return
+  }
+  if (btn(BTN_B)) {
+    if (btnp(BTN_LEFT))  { go(tile - 1) }
+    if (btnp(BTN_RIGHT)) { go(tile + 1) }
+    if (btnp(BTN_UP))    { colour = (colour + 1) % 16 }
+    if (btnp(BTN_DOWN))  { colour = (colour + 15) % 16 }
+    if (btnp(BTN_A)) {
+      keep()
+      if (savecart(h)) {
+        unsaved = 0
+        fmt(msg, "Saved")
+      } else {
+        fmt(msg, "Not saved")
+      }
+    }
+    return
+  }
+  if (btnp(BTN_LEFT))  { cx = (cx + 7) % 8 }
+  if (btnp(BTN_RIGHT)) { cx = (cx + 1) % 8 }
+  if (btnp(BTN_UP))    { cy = (cy + 7) % 8 }
+  if (btnp(BTN_DOWN))  { cy = (cy + 1) % 8 }
+  if (btn(BTN_A)) { paint(cx, cy) }
+  pointer()
+}
+
+draw(frame) {
+  cls(DARK_GREY)
+  rectfill(0, 0, SCREEN_W, 11, BLACK)
+  print("TILE PEEK", 3, 1, YELLOW)
+  if (h < 0) {
+    print("Press A to pick a cart", 54, 70, WHITE)
+    print(msg, 3, 148, GREY)
+    return
+  }
+  print("TILE {tile:04}", SCREEN_W - 63, 1, WHITE)
+
+  rectfill(OX - 2, OY - 2, 8 * ZOOM + 4, 8 * ZOOM + 4, BLACK)
+  for (var y = 0; y < 8; y++) {
+    for (var x2 = 0; x2 < 8; x2++) {
+      rectfill(OX + x2 * ZOOM, OY + y * ZOOM, ZOOM - 1, ZOOM - 1, px[y * 8 + x2])
+    }
+  }
+  var cc = (frame / 8) % 2 == 0 ? WHITE : YELLOW
+  rect(OX + cx * ZOOM - 1, OY + cy * ZOOM - 1, ZOOM + 1, ZOOM + 1, cc)
+
+  // the tile at 1x and 3x
+  for (var y = 0; y < 8; y++) {
+    for (var x2 = 0; x2 < 8; x2++) {
+      pset(PX + x2, OY + y, px[y * 8 + x2])
+      rectfill(PX + 16 + x2 * 3, OY + y * 3, 3, 3, px[y * 8 + x2])
+    }
+  }
+  print("FLAGS {px[64]:x}", PX + 48, OY, GREY)
+
+  // palette
+  print("COLOUR {colour}", PX, 60, WHITE)
+  for (var i = 0; i < 16; i++) {
+    rectfill(PX + i * 7, 70, 6, 9, i)
+  }
+  rect(PX + colour * 7 - 1, 69, 8, 11, WHITE)
+
+  print("A paint   B+left/right tile", PX - 6, 96, GREY)
+  print("B+up/down colour", PX - 6, 106, GREY)
+  print("B+A save", PX - 6, 116, GREY)
+  if (unsaved || dirty) { print("Unsaved changes", PX - 6, 130, ORANGE) }
+  print(msg, 3, 148, GREY)
+}
