@@ -2,7 +2,7 @@
 
 Browser emulator and default apps for **Bidule 01**, an open fantasy console built around easy-to-source hardware (240×160 indexed screen, D-pad, A/B).
 
-The emulator runs `.bdcart` source directly, following the *Bidule 01 — Technical Specification*: the cart language (int and 16.16 `fix`, records, enums, constant tables, string interpolation), the asset sections (sprite sheet, maps, sounds, palette), the editing API and the system dialogs.
+The emulator runs `.bdcart` source directly, following the [Bidule 01 technical specification](spec/technical-specification.md): the cart language (int and 16.16 `fix`, records, enums, constant tables, string interpolation), the asset sections (sprite sheet, maps, sounds, palette), the editing API and the system dialogs.
 
 ## Run it
 
@@ -18,6 +18,7 @@ Keys: arrows or WASD for the D-pad, X/K for A, Z/J for B, R to reset, M for soun
 
 | Path | What it holds |
 | --- | --- |
+| `spec/` | The specifications: technical spec, design document, threat model |
 | `src/js/` | The console, one module per concern, concatenated in the order listed in `scripts/build.mjs` |
 | `src/shell.html`, `src/styles.css` | The page around the screen: device, cart shelf, code editor |
 | `carts/` | Sample carts and default apps as `.bdcart` source; their asset data lives in `src/js/samples.js` |
