@@ -1,0 +1,9 @@
+[package]
+name = "bidule-compiler"
+description = "Bidule 01 cart compiler: .bdcart source to .bdb bytecode (no_std + alloc)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bidule-bytecode = { path = "../bidule-bytecode", features = ["alloc"] }

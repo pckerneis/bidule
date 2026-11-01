@@ -250,6 +250,7 @@ update() {
 
 - There is one compiler implementation, written in Rust as a `no_std` crate (with `alloc`). It is built for desktop, the browser (WebAssembly), Linux handhelds and, later, the microcontroller. The VM is a separate `no_std` crate that the compiler does not depend on beyond the shared bytecode definition.
 - The compiler MUST compile any valid cart within 128 KB of working RAM, including on Creator-class devices that have more. Automated tests enforce this with maximum-size carts. Richer analysis (linting, formatting, extra diagnostics) may live in a separate host-only tool, but never changes the bytecode.
+- Status: not met yet. The first compiler keeps the whole syntax tree in memory and peaks around 700 KB on the Sprite Editor; a test records current levels against regressions until it compiles one function at a time.
 - A new language feature is accepted only if it fits this budget; features needing unbounded whole-program analysis are rejected.
 
 **Asset section layout** — Decided. All multi-byte values are little-endian; sections are read in place from flash.
@@ -299,11 +300,13 @@ The source form of a `Sound` (note names, seconds as `fix`, volume 0.0–1.0, `d
 
 Cartridges run as bytecode in a virtual machine; the VM is the only thing that executes cartridge code. Fixed by the security model.
 
+The byte-level format — container, sections, opcode table, built-in ids, handles and verifier rules — is specified in [Bytecode and cart image format](bytecode.md) (Proposed), and implemented by the Rust crates in `crates/`.
+
 - The bytecode format MUST be specified byte for byte: encoding, endianness, opcode table, operand sizes, constant pools. The prior review found ambiguities here.
 - Bytecode MUST be verified at load: valid opcodes, jump targets inside the code section, stack depth bounded.
 - Every memory access MUST be bounds-checked against the cartridge's own RAM and asset sections.
-- Proposed: a fixed per-frame instruction or time budget, with defined behaviour when exceeded.
-- TBD: RAM budget per cartridge, stack size, call depth, error and crash screen behaviour.
+- Proposed: a fixed per-frame instruction or time budget, with defined behaviour when exceeded. The first implementation uses 2,000,000 instructions per handler call (see bytecode.md › Execution).
+- Proposed, from the first implementation: a 512-value stack, 512 local slots and 16 frames on the main core; 64 values and 64 locals on the audio core; about 30 KB of VM RAM in all. TBD: error and crash screen behaviour.
 
 ## Language
 
@@ -624,7 +627,7 @@ update() {
 - `record Name { field: type ... }` at top level. Fields are separated by commas or newlines.
 - A field is `int`, `fix`, another record, or a fixed-size array of any of these (`path: int[8]`, `wps: Vec2[4]`).
 - A record type may not contain itself, directly or indirectly (compile-time error).
-- `var x: Name` declares one record (its fields become globals); `var xs: Name[N]` declares an array of records. Both are global in v1.
+- `var x: Name` declares one record (each field becomes a one-element array, so the record can be passed by reference); `var xs: Name[N]` declares an array of records. Both are global in v1.
 
 **Using**
 
@@ -814,7 +817,7 @@ These changes raise the `.bdb` format version from 1 to 2. Version 1 carts can b
 | Truth values | `BOOL 0x37`: nonzero → 1 | Ends each `&&` / `\|\|` sequence |
 | Fix multiply and divide | `FMUL 0x16`, `FDIV 0x17` | 64-bit intermediate, result shifted by 16 |
 | Int ↔ fix | None | `<< 16` to promote; `>> 16` (arithmetic) for `int(x)` |
-| Fix math | New built-in ids for `sin`, `cos`, `atan2`, `sqrt`, `round`, `frac`, `copy` | Called through `CALL` |
+| Fix math | New built-in ids for `sin`, `cos`, `atan2`, `sqrt`, `copy` | Called through `CALL`; `round` and `frac` compile to an add, shifts and a mask |
 | Array initializers | Array declaration table stores initial values at a declared width (1, 2 or 4 bytes) | Replaces v0.9's u8 char-code-only init |
 | 2D arrays | None | Compiled to `y * width + x` |
 | Records | None for layout; `ARR_GET_DYN 0x74`, `ARR_SET_DYN 0x75` for references | Fields of one record array get consecutive array slots, so a reference is two values: first slot and index |
@@ -825,7 +828,7 @@ These changes raise the `.bdb` format version from 1 to 2. Version 1 carts can b
 | Debug section | Optional, flags bit 1: line table + name map for flattened record fields | Debug errors show source names |
 | Byte arrays (if chosen) | `ARR_GET8`, `ARR_SET8` | Separate byte pool or byte-addressed pool |
 
-Types exist only in the compiler; the VM sees 32-bit values and does not tag them.
+Types exist only in the compiler; the VM sees 32-bit values and does not tag them. The complete opcode table, including the 2D access, row and text-template instructions the first implementation added, is in [bytecode.md](bytecode.md).
 
 The audio core keeps its own 64-slot local stack, since `audio(t)` may declare locals. RAM cost of locals: 2 KB (main core) + 256 B (audio core).
 
@@ -984,6 +987,8 @@ The hardware is the reference: a cartridge MUST behave the same on the emulator 
 - Proposed: a shared conformance suite of test cartridges with expected frame and audio output, run against every target.
 - Proposed: one portable runtime codebase built for MCU firmware, desktop and handheld Linux.
 - TBD: supported desktop OSes and minimum specs; Anbernic firmware targets.
+
+**Rust toolchain** — the compiler, verifier, VM and runtime in `crates/` draw the same frames as the browser prototype for every sample cart, pixel for pixel, including gameplay with input and random numbers (`crates/bidule-cli/tests/conformance.rs`). The JS emulator stays the reference for the editing API until the Rust runtime implements it.
 
 **Browser prototype** — [Bidule 01](https://claude.ai/artifact/GjRorycErA1bFKurUzPZfW) runs `.bdcart` source in the browser to try the language and API. It is not conformant yet:
 

@@ -1,0 +1,11 @@
+[package]
+name = "bidule-bytecode"
+description = "Bidule 01 bytecode: opcodes, built-in table, cart image format and verifier (no_std)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# Encoding a cart image needs allocation; decoding and verifying do not.
+alloc = []
