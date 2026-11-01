@@ -91,7 +91,7 @@ La VM est la frontière de sécurité principale : une cartouche n'existe qu'à 
 
 Une cartouche ne reçoit que :
 
-- l'écran (240×160, RGB565) ;
+- l'écran (240×160, couleurs indexées sur 8 bits) ;
 - le son ;
 - les entrées (boutons, éventuellement souris ou tactile) ;
 - un emplacement de sauvegarde privé, de taille fixe, adressé par le hash de la cartouche ;
@@ -132,9 +132,9 @@ Le noyau (VM, chargeur, formats, protocole) est écrit dans un langage memory-sa
 
 ### Langage
 
-- **Option recommandée : Rust `no_std`.** Une seule base de code compile pour RP2040, RP2350, ESP32-S3, WASM, et peut produire un core libretro et une application SDL. Le `unsafe` est confiné à la couche d'abstraction matérielle et listé explicitement.
-- **Option C, si retenue :** sous-ensemble strict (pas d'allocation dynamique dans le noyau, pas d'arithmétique de pointeurs dans les parseurs), compilation avec avertissements maximaux, sanitizers (ASan, UBSan) en CI.
-- Dans les deux cas, le noyau ne connaît pas la plateforme : il passe par une couche d'abstraction matérielle étroite (écran, son, entrées, stockage, transport).
+- **Décision : Rust `no_std`** pour la VM et le compilateur. Une seule base de code compile pour RP2040, RP2350, ESP32-S3, WASM, et peut produire un core libretro et une application SDL. Le `unsafe` est confiné à la couche d'abstraction matérielle et listé explicitement.
+- Le travail existant en C (TinyUSB, FAT12) reste derrière la couche d'abstraction matérielle ; le noyau, lui, n'est pas en C.
+- Le noyau ne connaît pas la plateforme : il passe par une couche d'abstraction matérielle étroite (écran, son, entrées, stockage, transport).
 
 ### Formats
 
@@ -142,7 +142,7 @@ Les formats sont conçus pour être parsés sans surprise :
 
 - en-têtes à champs de taille fixe, longueurs préfixées, tailles maximales strictes pour chaque champ ;
 - un seul encodage canonique par donnée (indispensable pour le hash et la signature) ;
-- pas de compression généraliste dans le format de transport ; si une compression est nécessaire, un algorithme simple à taille de sortie déclarée et vérifiée ;
+- pas de compression généraliste dans le format de transport ; si une compression est nécessaire, un algorithme simple à taille de sortie déclarée et vérifiée (la section source de la cartouche n'est pas compressée) ;
 - le parseur transforme les octets en types validés dès l'entrée, et le reste du code ne manipule que ces types.
 
 ### Vérification continue
@@ -237,7 +237,7 @@ La console est ouverte : la sécurité protège son propriétaire, elle ne l'enf
 
 ### Questions ouvertes
 
-- [ ] Rust `no_std` ou C pour le noyau ? Le travail existant (TinyUSB, FAT12) est en C.
+- [x] Rust `no_std` ou C pour le noyau ? Décidé : Rust `no_std` (voir Implémentation).
 - [ ] Mode de réception par défaut : ouvert (cartes de visite de tous) ou restreint (auteurs suivis) ?
 - [ ] Les sauvegardes peuvent-elles être partagées entre versions successives d'une même cartouche ?
 - [ ] Faut-il une révocation de clé (clé perdue ou volée), et sous quelle forme sans autorité centrale ?
