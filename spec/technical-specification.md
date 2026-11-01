@@ -193,11 +193,16 @@ update() {
 
 **Cartridge format** — TBD. It MUST define:
 
+- File extensions: `.bdcart` is a cart's source file (see Language); `.bdb` is the compiled cart, the single file that devices store, exchange and run. A `.bdb` holds the bytecode, the source and the assets.
 - Header: magic, format version, title, author, size, checksum.
-- Sections: bytecode, source (compressed), debug info, constant tables, and one section per asset kind: sprite sheet, maps, sounds, music, palette.
+- Compiler version: the version of the compiler that built the bytecode, so a Creator device or the toolchain can pick the matching compiler to recompile the source and check it against the bytecode. The compiler MUST be deterministic: the same source and compiler version always give the same bytes.
+- Author identity: the author's public key (Ed25519), and the author's signature over the cart's hash (see the threat model). Identity and signing are specified in the threat model.
+- Lineage: the hash of the parent cart when a cart is a remix or a new version of another, empty otherwise.
+- Sections: bytecode, source (stored uncompressed), debug info, constant tables, and one section per asset kind: sprite sheet, maps, sounds, music, palette.
 - Each asset section carries a name table (name → fixed index) and a revision number.
 - Alignment rules so sections can be read in place.
-- A size limit, set by flash size; larger than previous Bidule programs.
+- A size limit, set by flash size; larger than previous Bidule programs. The source section counts toward it, so authors may minify their source to save space.
+- One canonical encoding per cart, so that hashes and signatures are stable.
 - A cart may hold assets only, with no bytecode: an asset pack (a sprite set, a sound bank) for sharing and importing.
 
 **Sound data** — `Sound` values are ordinary constant tables or records and live in flash with the rest of the cart's data (see Input and audio).
@@ -205,9 +210,10 @@ update() {
 **Authoring and source** — Decided:
 
 - Code is written and compiled on a computer; the device has no code editor or compiler. Assets can be edited on either side (see Asset editing below).
-- The cart carries its source alongside the bytecode, in a compressed section. The device MUST let a user read the source of any cart it holds, including carts received by peer exchange, and copy it to a computer over USB.
+- The cart carries its source alongside the bytecode, in an uncompressed section: no decompressor is needed on the device, and the format stays simple to parse (see the threat model). The device MUST let a user read the source of any cart it holds, including carts received by peer exchange, and copy it to a computer over USB.
 - Proposed metadata: `@license` (shown on the device beside the source; the cart template starts with an open license the author can change) and `@spoilers` (the device warns before showing the source).
 - Decided: source is always included; authors cannot leave it out. Bytecode can be decompiled anyway, readable carts are the platform's openness made concrete, and readable code lets anyone check what arrives from strangers.
+- Decided: the source may be minified or obfuscated; the rule is that it is present and recompiles to the cart's bytecode, not that it is easy to read. Anyone with the compiler version named in the header can check this locally; no server is involved. The toolchain SHOULD ship a canonical formatter that restores layout to minified source.
 
 **Asset editing** — Decided:
 
@@ -242,8 +248,8 @@ update() {
 
 **Compiler constraints** — Decided, so that a future Creator-class device can compile on the console:
 
-- There is one compiler implementation, written in portable C or Rust with no large runtime. It is built for desktop, the browser (WebAssembly), Linux handhelds and, later, the microcontroller.
-- The compiler MUST compile any valid cart within 128 KB of working RAM. Automated tests enforce this with maximum-size carts.
+- There is one compiler implementation, written in Rust as a `no_std` crate (with `alloc`). It is built for desktop, the browser (WebAssembly), Linux handhelds and, later, the microcontroller. The VM is a separate `no_std` crate that the compiler does not depend on beyond the shared bytecode definition.
+- The compiler MUST compile any valid cart within 128 KB of working RAM, including on Creator-class devices that have more. Automated tests enforce this with maximum-size carts. Richer analysis (linting, formatting, extra diagnostics) may live in a separate host-only tool, but never changes the bytecode.
 - A new language feature is accepted only if it fits this budget; features needing unbounded whole-program analysis are rejected.
 
 **Asset section layout** — Decided. All multi-byte values are little-endian; sections are read in place from flash.
@@ -327,7 +333,7 @@ Kept from v0.9: integer-only arithmetic, no dynamic allocation, single-file cart
 
 ### Program structure and lexical rules
 
-A cart is one source file (`.bdcart`): metadata comments, then top-level declarations, functions and lifecycle handlers in any order. Names are resolved across the whole file, so a function may call one defined below it.
+A cart's source is one file (`.bdcart`); compiling it produces the `.bdb` cart (see Cartridge format). A source file holds metadata comments, then top-level declarations, functions and lifecycle handlers in any order. Names are resolved across the whole file, so a function may call one defined below it.
 
 - **Metadata:** `// @key value` lines before the first declaration. Keys: `title`, `author`, `version`, `desc`, `id`. Unknown keys produce a warning.
 - **Comments:** `//` to end of line.

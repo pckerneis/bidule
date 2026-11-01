@@ -124,7 +124,7 @@ Writing code on the console is out of scope for Bidule 01, but a later version m
 | Player | Any Bidule device | Play, read source, edit assets |
 | Creator | At least 512 KB of RAM and a keyboard (USB, Bluetooth or built in) | Also edit and compile code |
 
-Both classes run the same carts. Because every cart carries its source, a Creator device could open a game received by peer exchange and remix it on the spot. To keep this possible, Bidule 01 builds one portable compiler under a fixed memory budget (see the spec).
+Both classes run the same carts. Because every cart carries its source, a Creator device could open a game received by peer exchange and remix it on the spot. To keep this possible, Bidule 01 builds one portable compiler, written in Rust, under a fixed memory budget that holds on every device (see the spec).
 
 ## Security by default
 
