@@ -50,7 +50,7 @@ Open question: how sharing works on targets without the hardware's radio (emulat
 
 ## Hardware direction
 
-Bidule 01 is a single-chip design: one microcontroller drives display, input, audio and storage. The screen is 240×160 in RGB565, so one full framebuffer is 76,800 bytes. Tile, sprite and audio data stay in external flash and are read in place (XIP) rather than copied to RAM.
+Bidule 01 is a single-chip design: one microcontroller drives display, input, audio and storage. The screen is 240×160 with 8-bit indexed colour (a 256-entry RGB565 palette), so one full framebuffer is 38,400 bytes. Tile, sprite and audio data stay in external flash and are read in place (XIP) rather than copied to RAM.
 
 The chip choice is still open. The previous prototype ran on the RP2040, but passive sharing needs a radio.
 

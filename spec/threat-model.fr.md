@@ -91,7 +91,7 @@ La VM est la frontière de sécurité principale : une cartouche n'existe qu'à 
 
 Une cartouche ne reçoit que :
 
-- l'écran (240×160, RGB565) ;
+- l'écran (240×160, couleurs indexées sur 8 bits) ;
 - le son ;
 - les entrées (boutons, éventuellement souris ou tactile) ;
 - un emplacement de sauvegarde privé, de taille fixe, adressé par le hash de la cartouche ;
