@@ -26,6 +26,21 @@ const CART_KEYS = {
   "sprite-editor": "sprites", "new-cart": "new-cart",
 };
 
+// Monogram glyphs for ASCII 32–126. The source bitmap is 12 rows per glyph:
+// rows 0–2 hold accents above capitals, which ASCII never uses, so the console
+// keeps rows 3–11 — a 9-row cell, as the spec's 6×9 font requires.
+export function monogramRows() {
+  const bitmap = JSON.parse(read("fonts/monogram/monogram-bitmap.json"));
+  const rows = [];
+  for (let c = 32; c <= 126; c++) {
+    const g = bitmap[String.fromCharCode(c)];
+    if (!g || g.length !== 12) throw new Error(`Monogram bitmap has no 12-row glyph for ${JSON.stringify(String.fromCharCode(c))}`);
+    if (g.slice(0, 3).some(Boolean)) throw new Error(`glyph ${c} uses the accent rows`);
+    rows.push(...g.slice(3));
+  }
+  return rows;
+}
+
 export function sampleSources() {
   const out = {};
   for (const f of readdirSync(join(root, "carts")).filter(f => f.endsWith(".bdcart"))) {
@@ -42,6 +57,7 @@ export function assembleScript({ withHost = true } = {}) {
     '"use strict";',
     "const W = 240, H = 160;",
     `const SAMPLE_SOURCES = ${JSON.stringify(sampleSources(), null, 2)};`,
+    `const MONOGRAM_ROWS = [${monogramRows().join(",")}];`,
     ...mods.map(m => `\n/* ---- src/js/${m} ---- */\n` + read(join("src/js", m))),
   ].join("\n");
   return withHost ? `(() => {\n${body}\n})();\n` : body;

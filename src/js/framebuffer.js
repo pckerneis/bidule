@@ -50,7 +50,7 @@ function drawText(s, x, y, c) {
     for (let r = 0; r < CH; r++) {
       const bits = GLYPHS[g * 9 + r];
       if (!bits) continue;
-      for (let b = 0; b < CW; b++) if (bits & (32 >> b)) px(x + b, y + r, c);
+      for (let b = 0; b < 5; b++) if (bits & (1 << b)) px(x + b, y + r, c);
     }
     x += CW; if (x > maxX) maxX = x;
   }

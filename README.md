@@ -21,6 +21,7 @@ Keys: arrows or WASD for the D-pad, X/K for A, Z/J for B, R to reset, M for soun
 | `src/js/` | The console, one module per concern, concatenated in the order listed in `scripts/build.mjs` |
 | `src/shell.html`, `src/styles.css` | The page around the screen: device, cart shelf, code editor |
 | `carts/` | Sample carts and default apps as `.bdcart` source; their asset data lives in `src/js/samples.js` |
+| `fonts/monogram/` | Monogram bitmap (CC0) and its credits; the build turns it into the console font |
 | `scripts/build.mjs` | Builds `dist/index.html` (standalone) and `dist/artifact.html` (body fragment) |
 | `tests/` | Node tests: language, assets and editing API, a scripted Sprite Editor session, the page in a simulated browser |
 
@@ -30,7 +31,7 @@ Keys: arrows or WASD for the D-pad, X/K for A, Z/J for B, R to reset, M for soun
 | --- | --- |
 | `carts.js` | Cart model, asset sections, (de)serialization |
 | `samples.js` | Sample carts with their sprites, maps and sounds |
-| `palette.js`, `font.js`, `framebuffer.js` | 256-entry RGB565 palette, 6×9 font, 8-bit framebuffer and primitives |
+| `palette.js`, `font.js`, `framebuffer.js` | 256-entry RGB565 palette, Monogram 6×9 font, 8-bit framebuffer and primitives |
 | `audio.js` | 4 synth voices for `Sound` values, bytebeat `audio(t)` |
 | `lexer.js`, `parser.js`, `values.js` | Source → AST, runtime value types |
 | `interpreter.js` | Resumable interpreter (generators), built-ins, asset names, editing API |
@@ -52,6 +53,9 @@ npm test
 ## Known gaps
 
 - No compiler, bytecode or verifier yet: source is interpreted, and compile-time errors appear when a line first runs.
-- A stand-in font replaces Monogram until it is bundled.
 - `rnd` uses the browser's generator, so sequences are not reproducible.
 - Music assets and slot emptying are not implemented; carts can't be exported or imported as files yet.
+
+## Credits
+
+Monogram is a free, Creative Commons Zero pixel font by Vinícius Menézio ([datagoblin.itch.io/monogram](https://datagoblin.itch.io/monogram)). See `fonts/monogram/CREDITS.txt`.
