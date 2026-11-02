@@ -1,0 +1,27 @@
+name: Rust toolchain
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+          targets: thumbv6m-none-eabi, wasm32-unknown-unknown
+      - run: cargo fmt --all --check
+      - run: cargo test --workspace
+      - run: cargo test --release -p bidule-cli --test fuzz
+      # the VM, verifier and runtime build for the RP2040 and the browser, without std
+      - run: cargo build -p bidule-bytecode -p bidule-vm -p bidule-runtime --target thumbv6m-none-eabi
+      - run: cargo build -p bidule-compiler -p bidule-vm -p bidule-runtime --target wasm32-unknown-unknown

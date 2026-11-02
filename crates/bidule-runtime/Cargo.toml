@@ -1,0 +1,13 @@
+[package]
+name = "bidule-runtime"
+description = "Bidule 01 console runtime: renderer, input, asset access and the system side of the API (no_std)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bidule-bytecode = { path = "../bidule-bytecode" }
+bidule-vm = { path = "../bidule-vm" }
+
+[dev-dependencies]
+bidule-compiler = { path = "../bidule-compiler" }

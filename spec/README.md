@@ -3,6 +3,7 @@
 | Document | What it settles |
 | --- | --- |
 | [Technical specification](technical-specification.md) | Hardware profile, display and palette, input and audio, storage and cart format, asset sections and editing API, runtime and VM, the cart language, peer exchange, security requirements, conformance |
+| [Bytecode and cart image format](bytecode.md) | The `.bdb` container and sections, opcode table, built-in ids, array handles, verifier rules and execution limits |
 | [Design document](design-document.md) | Why Bidule exists, goals and non-goals, target platforms, hardware direction, creation and sharing, authoring workflow |
 | [Modèle de menaces et architecture de sécurité](threat-model.fr.md) | Threat model and security architecture (in French): cart isolation, implementation, identity and exchange protocol, decentralised moderation, firmware |
 
