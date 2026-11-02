@@ -161,6 +161,7 @@ test("full screen mode switch: buttons hidden and the screen is the pointer in m
   await wait(100);
   const cv = $("screen"), touch = (type, x, y, buttons) => finger(w, cv, type, 3, x, y, { pointerType: "touch", buttons });
   $("fsBtn").click();
+  for (const id of ["fsReset", "fsMode", "fsExit"]) assert.ok(!$("fsStage").contains($(id)), `${id} sits beside the screen, not in its stage`);
   assert.equal($("fsMode").textContent, "⇄ Buttons");
   assert.ok(!$("fs").classList.contains("fs-mouse"));
 
