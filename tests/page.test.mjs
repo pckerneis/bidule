@@ -73,3 +73,84 @@ test("the page shows compile errors, survives an endless loop, and resets", { sk
   assert.equal(w.__fb[0], 4);
   assert.deepEqual(errors, []);
 });
+
+const SKIP_JSDOM = !JSDOM && "jsdom not installed";
+// A finger on the full-screen overlay: a mouse event with a pointer id, which is all the page reads.
+function finger(w, el, type, id, x, y) {
+  const e = new w.MouseEvent(type, { clientX: x, clientY: y, bubbles: true, cancelable: true });
+  Object.defineProperty(e, "pointerId", { value: id });
+  el.dispatchEvent(e);
+}
+
+test("full screen moves the screen into the overlay and back", { skip: SKIP_JSDOM }, async () => {
+  const { w, $, errors } = boot();
+  await wait(100);
+  const home = $("screen").parentElement;
+  assert.equal($("fs").hidden, true);
+  $("fsBtn").click();
+  assert.equal($("fs").hidden, false);
+  assert.equal($("screen").parentElement, $("fsStage"));
+  assert.ok(w.document.documentElement.classList.contains("fs-on"));
+  assert.equal($("fsBtn").getAttribute("aria-pressed"), "true");
+  $("fsExit").click();
+  assert.equal($("fs").hidden, true);
+  assert.equal($("screen").parentElement, home);
+  assert.ok(!w.document.documentElement.classList.contains("fs-on"));
+  w.dispatchEvent(new w.KeyboardEvent("keydown", { code: "KeyF", bubbles: true }));
+  assert.equal($("fs").hidden, false, "F enters full screen");
+  w.dispatchEvent(new w.KeyboardEvent("keydown", { code: "Escape", bubbles: true }));
+  assert.equal($("fs").hidden, true, "Escape leaves it when the browser has no native full screen");
+  assert.deepEqual(errors, []);
+});
+
+test("full screen overlay: multi-touch, sliding between buttons, diagonals", { skip: SKIP_JSDOM }, async () => {
+  const { w, $, errors } = boot();
+  await wait(100);
+  $("fsBtn").click();
+  const [dpad, ab] = [...w.document.querySelectorAll(".fs-zone")];
+  const rect = (l, t, wd, ht) => ({ left: l, top: t, width: wd, height: ht, right: l + wd, bottom: t + ht });
+  dpad.getBoundingClientRect = () => rect(0, 0, 120, 120);
+  const btn = n => w.document.querySelector(`.fs [data-fb="${n}"]`);
+  btn(5).getBoundingClientRect = () => rect(300, 100, 60, 60);   // B
+  btn(4).getBoundingClientRect = () => rect(374, 60, 60, 60);    // A
+  ab.getBoundingClientRect = () => rect(300, 60, 134, 100);
+  const on = n => btn(n).classList.contains("down-state");
+
+  finger(w, dpad, "pointerdown", 1, 10, 60);                     // left of centre
+  assert.deepEqual([0, 1, 2, 3].map(on), [true, false, false, false]);
+  finger(w, dpad, "pointermove", 1, 110, 60);                    // slides across: left off, right on
+  assert.deepEqual([0, 1, 2, 3].map(on), [false, true, false, false]);
+  finger(w, dpad, "pointermove", 1, 100, 10);                    // up-right diagonal holds two buttons
+  assert.deepEqual([0, 1, 2, 3].map(on), [false, true, true, false]);
+  finger(w, dpad, "pointermove", 1, 60, 60);                     // dead centre
+  assert.deepEqual([0, 1, 2, 3].map(on), [false, false, false, false]);
+
+  finger(w, dpad, "pointermove", 1, 110, 60);
+  finger(w, ab, "pointerdown", 2, 330, 130);                     // second finger on B while right is held
+  assert.deepEqual([1, 4, 5].map(on), [true, false, true]);
+  finger(w, ab, "pointermove", 2, 404, 90);                      // B to A without lifting
+  assert.deepEqual([1, 4, 5].map(on), [true, true, false]);
+  finger(w, dpad, "pointerup", 1, 110, 60);
+  assert.deepEqual([1, 4, 5].map(on), [false, true, false]);
+  finger(w, ab, "pointercancel", 2, 404, 90);
+  assert.deepEqual([1, 4, 5].map(on), [false, false, false]);
+  assert.deepEqual(errors, []);
+});
+
+test("full screen overlay buttons reach the cart and are released on exit", { skip: SKIP_JSDOM }, async () => {
+  const { w, $, errors } = boot();
+  await wait(100);
+  $("code").value = "draw() {\n  cls(1)\n  if (btn(BTN_A)) {\n    cls(4)\n  }\n}";
+  $("runBtn").click();
+  $("fsBtn").click();
+  const ab = w.document.querySelectorAll(".fs-zone")[1];
+  const a = w.document.querySelector('.fs [data-fb="4"]');
+  a.getBoundingClientRect = () => ({ left: 374, top: 60, width: 60, height: 60, right: 434, bottom: 120 });
+  await wait(100);
+  assert.equal(w.__fb[0], 1);
+  finger(w, ab, "pointerdown", 7, 404, 90); await wait(100);
+  assert.equal(w.__fb[0], 4, "A on the overlay is BTN_A for the cart");
+  $("fsExit").click(); await wait(100);
+  assert.equal(w.__fb[0], 1, "leaving full screen releases held buttons");
+  assert.deepEqual(errors, []);
+});

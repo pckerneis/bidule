@@ -51,10 +51,12 @@
         <dt><kbd>Z</kbd> <kbd>J</kbd></dt><dd>B · BTN_B</dd>
         <dt><kbd>R</kbd></dt><dd>Reset the cartridge</dd>
         <dt><kbd>M</kbd></dt><dd>Sound on or off</dd>
+        <dt><kbd>F</kbd></dt><dd>Full screen</dd>
         <dt>Mouse</dt><dd>Pointer on the screen (mousex, mousey, mouseb)</dd>
       </dl>
       <div class="chips">
         <button class="chip" id="soundBtn" aria-pressed="true">Sound on</button>
+        <button class="chip" id="fsBtn" aria-pressed="false">Full screen</button>
         <button class="chip" id="toggleCode" aria-expanded="false" aria-controls="editor">Edit code</button>
       </div>
     </div>
@@ -153,6 +155,25 @@
       </div>
     </details>
   </section>
+</div>
+
+<div class="fs" id="fs" hidden role="dialog" aria-label="Full screen console">
+  <div class="fs-stage" id="fsStage"></div>
+  <p class="fs-rotate">Rotate your device for landscape</p>
+  <div class="fs-top">
+    <button class="fs-sys" id="fsReset" type="button">Reset</button>
+    <button class="fs-sys" id="fsExit" type="button" aria-label="Exit full screen">✕</button>
+  </div>
+  <div class="fs-zone fs-dpad" aria-hidden="true">
+    <span class="up" data-fb="2"></span>
+    <span class="left" data-fb="0"></span>
+    <span class="right" data-fb="1"></span>
+    <span class="down" data-fb="3"></span>
+  </div>
+  <div class="fs-zone fs-ab" aria-hidden="true">
+    <span class="b" data-fb="5">B</span>
+    <span class="a" data-fb="4">A</span>
+  </div>
 </div>
 
 <script>
