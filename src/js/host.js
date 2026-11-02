@@ -370,8 +370,11 @@ function screenXY(ev) {
   return [Math.max(0, Math.min(W - 1, Math.floor((ev.clientX - r.left) / r.width * W))), Math.max(0, Math.min(H - 1, Math.floor((ev.clientY - r.top) / r.height * H)))];
 }
 const BTN_BITS = ev => (ev.buttons & 1 ? 1 : 0) | (ev.buttons & 2 ? 2 : 0) | (ev.buttons & 4 ? 4 : 0);
-canvas.addEventListener("pointermove", ev => { [pointer.x, pointer.y] = screenXY(ev); pointer.b = BTN_BITS(ev); });
+// In full-screen button mode a finger on the screen is not input (a real mouse always is).
+const fsIgnores = ev => fsActive && !fsMouse && ev.pointerType === "touch";
+canvas.addEventListener("pointermove", ev => { if (fsIgnores(ev)) return; [pointer.x, pointer.y] = screenXY(ev); pointer.b = BTN_BITS(ev); });
 canvas.addEventListener("pointerdown", ev => {
+  if (fsIgnores(ev)) { ev.preventDefault(); return; }
   if (isTyping(document.activeElement)) document.activeElement.blur();
   try { canvas.setPointerCapture(ev.pointerId); } catch (_) {}
   [pointer.x, pointer.y] = screenXY(ev); pointer.b = BTN_BITS(ev) || 1;
@@ -397,7 +400,16 @@ resetEl.addEventListener("click", pressReset);
 const fsRoot = document.getElementById("fs"), fsStage = document.getElementById("fsStage");
 const fsBtn = document.getElementById("fsBtn");
 const screenWrap = canvas.parentElement;
-let fsNative = false, fsWake = null;
+let fsNative = false, fsWake = null, fsMouse = false;   // fsMouse: the screen is the input, the buttons are hidden
+const fsMode = document.getElementById("fsMode");
+function setFsMouse(on) {
+  fsMouse = on;
+  fsRoot.classList.toggle("fs-mouse", on);
+  fsMode.textContent = on ? "⇄ Mouse" : "⇄ Buttons";
+  fsMode.setAttribute("aria-label", `Input mode: ${on ? "mouse" : "buttons"}. Press to switch.`);
+  fsPointers.clear(); fsHeld = 0; for (let i = 0; i < 6; i++) paintButton(i);   // nothing stays held across the switch
+  pointer.b = 0;
+}
 
 function fitFs() {
   const cs = getComputedStyle(fsStage);
@@ -481,6 +493,7 @@ function toggleFs() { if (fsActive) exitFs(); else enterFs(); }
 fsBtn.addEventListener("click", toggleFs);
 document.getElementById("fsExit").addEventListener("click", exitFs);
 document.getElementById("fsReset").addEventListener("click", pressReset);
+fsMode.addEventListener("click", () => setFsMouse(!fsMouse));
 document.addEventListener("fullscreenchange", () => { if (fsActive && fsNative && !document.fullscreenElement) exitFs(); });   // Esc or the browser's own exit
 document.addEventListener("visibilitychange", () => { if (fsActive && document.visibilityState === "visible" && !fsWake) holdAwake(); });
 window.addEventListener("resize", () => { if (fsActive) fitFs(); });

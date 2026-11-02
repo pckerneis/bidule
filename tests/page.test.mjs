@@ -10,7 +10,7 @@ const opened = [];
 after(() => opened.forEach(w => w.close()));
 const wait = ms => new Promise(r => setTimeout(r, ms));
 function boot(seed) {
-  const html = assemblePage().replace("loadShelf();\n", "window.__fb = fb; loadShelf();\n");
+  const html = assemblePage().replace("loadShelf();\n", "window.__fb = fb; window.__ptr = pointer; loadShelf();\n");
   const dom = new JSDOM(html, { url: "https://bidule.test/", runScripts: "outside-only", pretendToBeVisual: true });
   const w = dom.window;
   if (seed) w.localStorage.setItem("bidule01.shelf.v1", JSON.stringify(seed));
@@ -76,9 +76,10 @@ test("the page shows compile errors, survives an endless loop, and resets", { sk
 
 const SKIP_JSDOM = !JSDOM && "jsdom not installed";
 // A finger on the full-screen overlay: a mouse event with a pointer id, which is all the page reads.
-function finger(w, el, type, id, x, y) {
-  const e = new w.MouseEvent(type, { clientX: x, clientY: y, bubbles: true, cancelable: true });
+function finger(w, el, type, id, x, y, extra = {}) {
+  const e = new w.MouseEvent(type, { clientX: x, clientY: y, buttons: extra.buttons || 0, bubbles: true, cancelable: true });
   Object.defineProperty(e, "pointerId", { value: id });
+  if (extra.pointerType) Object.defineProperty(e, "pointerType", { value: extra.pointerType });
   el.dispatchEvent(e);
 }
 
@@ -152,5 +153,35 @@ test("full screen overlay buttons reach the cart and are released on exit", { sk
   assert.equal(w.__fb[0], 4, "A on the overlay is BTN_A for the cart");
   $("fsExit").click(); await wait(100);
   assert.equal(w.__fb[0], 1, "leaving full screen releases held buttons");
+  assert.deepEqual(errors, []);
+});
+
+test("full screen mode switch: buttons hidden and the screen is the pointer in mouse mode", { skip: SKIP_JSDOM }, async () => {
+  const { w, $, errors } = boot();
+  await wait(100);
+  const cv = $("screen"), touch = (type, x, y, buttons) => finger(w, cv, type, 3, x, y, { pointerType: "touch", buttons });
+  $("fsBtn").click();
+  assert.equal($("fsMode").textContent, "⇄ Buttons");
+  assert.ok(!$("fs").classList.contains("fs-mouse"));
+
+  touch("pointerdown", 50, 60, 1);                               // button mode: a finger on the screen is not input
+  assert.equal(w.__ptr.b, 0);
+  touch("pointerup", 50, 60, 0);
+  finger(w, cv, "pointerdown", 4, 20, 30, { pointerType: "mouse", buttons: 1 });
+  assert.deepEqual([w.__ptr.x, w.__ptr.y, w.__ptr.b], [20, 30, 1], "a physical mouse always works");
+  finger(w, cv, "pointerup", 4, 20, 30, { pointerType: "mouse" });
+
+  $("fsMode").click();
+  assert.ok($("fs").classList.contains("fs-mouse"));
+  assert.equal($("fsMode").textContent, "⇄ Mouse");
+  touch("pointerdown", 50, 60, 1);
+  assert.deepEqual([w.__ptr.x, w.__ptr.y, w.__ptr.b], [50, 60, 1]);
+  touch("pointermove", 70, 80, 1);
+  assert.deepEqual([w.__ptr.x, w.__ptr.y, w.__ptr.b], [70, 80, 1]);
+  $("fsMode").click();                                           // switching back lets go of a held click
+  assert.equal(w.__ptr.b, 0);
+  touch("pointerup", 70, 80, 0);
+  assert.equal(w.__ptr.b, 0);
+  assert.ok(!$("fs").classList.contains("fs-mouse"));
   assert.deepEqual(errors, []);
 });
