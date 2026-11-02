@@ -289,7 +289,7 @@ function dialogClick(x, y) {
 /* ---------- main loop: fixed 60 Hz ---------- */
 const STEP = 1000 / 60;
 let acc = 0, last = performance.now();
-function currentInput() { let inp = 0; for (let i = 0; i < 6; i++) if (keyHeld[i] || touchHeld[i] > 0) inp |= 1 << i; return inp; }
+function currentInput() { let inp = 0; for (let i = 0; i < 6; i++) if (keyHeld[i] || touchHeld[i] > 0 || (fsHeld >> i & 1)) inp |= 1 << i; return inp; }
 function loop(now) {
   acc += Math.min(250, now - last); last = now;
   let ran = false;
@@ -313,7 +313,9 @@ function loop(now) {
 
 /* ---------- integer scaling ---------- */
 const bezel = document.getElementById("bezel");
+let fsActive = false;                         // full-screen mode, see below
 function fitScreen() {
+  if (fsActive) { fitFs(); return; }
   const cs = getComputedStyle(bezel);
   const avail = bezel.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
   const s = Math.floor(avail / W);
@@ -325,10 +327,13 @@ fitScreen();
 
 /* ---------- input ---------- */
 const keyHeld = new Array(6).fill(false), touchHeld = new Array(6).fill(0);
+let fsHeld = 0;                               // buttons held on the full-screen overlay (bit i = button i)
+const fsPointers = new Map();                 // pointerId -> { mask }, one entry per finger on the overlay
 const KEYMAP = { ArrowLeft: 0, KeyA: 0, ArrowRight: 1, KeyD: 1, ArrowUp: 2, KeyW: 2, ArrowDown: 3, KeyS: 3, KeyX: 4, KeyK: 4, KeyZ: 5, KeyJ: 5 };
 const buttonsById = [[], [], [], [], [], []];
 document.querySelectorAll("[data-b]").forEach(el => buttonsById[+el.dataset.b].push(el));
-const paintButton = i => { const on = keyHeld[i] || touchHeld[i] > 0; buttonsById[i].forEach(el => el.classList.toggle("down-state", on)); };
+document.querySelectorAll("[data-fb]").forEach(el => buttonsById[+el.dataset.fb].push(el));
+const paintButton = i => { const on = !!(keyHeld[i] || touchHeld[i] > 0 || (fsHeld >> i & 1)); buttonsById[i].forEach(el => el.classList.toggle("down-state", on)); };
 const isTyping = el => el && (el.tagName === "TEXTAREA" || el.tagName === "INPUT" || el.tagName === "SELECT");
 
 window.addEventListener("keydown", e => {
@@ -336,11 +341,13 @@ window.addEventListener("keydown", e => {
   ensureAudio();
   if (e.code === "KeyR") { e.preventDefault(); if (!e.repeat) pressReset(); return; }
   if (e.code === "KeyM") { e.preventDefault(); if (!e.repeat) toggleSound(); return; }
+  if (e.code === "KeyF") { e.preventDefault(); if (!e.repeat) toggleFs(); return; }
+  if (e.code === "Escape" && fsActive) { e.preventDefault(); exitFs(); return; }
   const i = KEYMAP[e.code]; if (i === undefined) return;
   e.preventDefault(); keyHeld[i] = true; paintButton(i);
 });
 window.addEventListener("keyup", e => { const i = KEYMAP[e.code]; if (i === undefined) return; keyHeld[i] = false; paintButton(i); });
-window.addEventListener("blur", () => { keyHeld.fill(false); touchHeld.fill(0); pointer.b = 0; for (let i = 0; i < 6; i++) paintButton(i); });
+window.addEventListener("blur", () => { keyHeld.fill(false); touchHeld.fill(0); fsPointers.clear(); fsHeld = 0; pointer.b = 0; for (let i = 0; i < 6; i++) paintButton(i); });
 window.addEventListener("pointerdown", ensureAudio, { capture: true });
 
 document.querySelectorAll("[data-b]").forEach(el => {
@@ -379,6 +386,106 @@ canvas.style.touchAction = "none";
 const resetEl = document.getElementById("resetBtn");
 function pressReset() { resetEl.classList.add("down-state"); setTimeout(() => resetEl.classList.remove("down-state"), 120); load(); }
 resetEl.addEventListener("click", pressReset);
+
+/* ---------- full screen ----------
+   The screen goes landscape at the largest whole scale that fits (spec: integer scaling) and the
+   D-pad and A/B are drawn over it. The overlay does its own hit-testing, so one finger can slide
+   from a button to its neighbour, the D-pad reads diagonals, and every finger is tracked on its
+   own: any number of buttons can be held. It feeds the same 6-bit mask as the keyboard.
+   Browser gestures are kept off the page: touch-action and overscroll-behavior in the CSS,
+   plus the listeners below for what CSS can't stop (Safari's pinch, touchmove, long press). */
+const fsRoot = document.getElementById("fs"), fsStage = document.getElementById("fsStage");
+const fsBtn = document.getElementById("fsBtn");
+const screenWrap = canvas.parentElement;
+let fsNative = false, fsWake = null;
+
+function fitFs() {
+  const cs = getComputedStyle(fsStage);
+  const aw = fsStage.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+  const ah = fsStage.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+  if (!(aw > 0 && ah > 0)) return;
+  const fit = Math.min(aw / W, ah / H), s = Math.floor(fit);
+  canvas.style.width = Math.max(120, Math.floor(s >= 2 ? s * W : fit * W)) + "px";
+}
+
+// Which buttons a finger at (x, y) holds, for one overlay zone.
+function fsMaskAt(zone, x, y) {
+  const r = zone.getBoundingClientRect();
+  if (zone.classList.contains("fs-dpad")) {
+    const dx = x - (r.left + r.width / 2), dy = y - (r.top + r.height / 2);
+    if (Math.hypot(dx, dy) < r.width * 0.12 || Math.hypot(dx, dy) > r.width * 1.6) return 0;   // dead centre, or finger far away
+    const ax = Math.abs(dx), ay = Math.abs(dy), side = dx < 0 ? 1 << 0 : 1 << 1, vert = dy < 0 ? 1 << 2 : 1 << 3;
+    return ay <= ax * 0.414 ? side : ax <= ay * 0.414 ? vert : side | vert;                     // 22.5° sectors: 4 directions, 4 diagonals
+  }
+  let best = 0, bestD = Infinity;
+  zone.querySelectorAll("[data-fb]").forEach(el => {
+    const b = el.getBoundingClientRect(), pad = b.width * 0.22;
+    if (x < b.left - pad || x > b.right + pad || y < b.top - pad || y > b.bottom + pad) return;
+    const d = Math.hypot(x - (b.left + b.width / 2), y - (b.top + b.height / 2));
+    if (d < bestD) { bestD = d; best = 1 << +el.dataset.fb; }
+  });
+  return best;
+}
+function fsRecalc() {
+  let m = 0; fsPointers.forEach(e => { m |= e.mask; });
+  if (m === fsHeld) return;
+  fsHeld = m; for (let i = 0; i < 6; i++) paintButton(i);
+}
+fsRoot.querySelectorAll(".fs-zone").forEach(zone => {
+  const move = ev => { const e = fsPointers.get(ev.pointerId); if (!e) return; e.mask = fsMaskAt(zone, ev.clientX, ev.clientY); fsRecalc(); };
+  const up = ev => { if (fsPointers.delete(ev.pointerId)) fsRecalc(); };
+  zone.addEventListener("pointerdown", ev => {
+    ev.preventDefault();
+    try { zone.setPointerCapture(ev.pointerId); } catch (_) {}      // moves keep coming here when the finger leaves the zone
+    fsPointers.set(ev.pointerId, { mask: 0 }); move(ev);
+  });
+  zone.addEventListener("pointermove", move);
+  ["pointerup", "pointercancel", "lostpointercapture"].forEach(t => zone.addEventListener(t, up));
+});
+["gesturestart", "gesturechange", "gestureend", "contextmenu", "selectstart", "dblclick"].forEach(t => fsRoot.addEventListener(t, ev => ev.preventDefault()));
+fsRoot.addEventListener("touchmove", ev => ev.preventDefault(), { passive: false });
+
+async function holdAwake() {
+  try { fsWake = await navigator.wakeLock.request("screen"); fsWake.addEventListener("release", () => { fsWake = null; }); } catch (_) { fsWake = null; }
+}
+async function enterFs() {
+  if (fsActive) return;
+  fsActive = true;
+  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();   // Space or Enter must not re-press the chip
+  fsRoot.hidden = false; fsStage.appendChild(canvas);
+  document.documentElement.classList.add("fs-on");
+  fsBtn.setAttribute("aria-pressed", "true");
+  fitFs();
+  // Native full screen where the browser allows it (not iPhone Safari, nor a frame without permission);
+  // the fixed overlay above already fills the page when it doesn't.
+  try { if (fsRoot.requestFullscreen) { await fsRoot.requestFullscreen({ navigationUI: "hide" }); fsNative = true; } } catch (_) {}
+  if (!fsActive) { if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); return; }
+  if (fsNative) { try { await screen.orientation.lock("landscape"); } catch (_) {} }
+  holdAwake(); fitFs();
+}
+function exitFs() {
+  if (!fsActive) return;
+  fsActive = false;
+  fsPointers.clear(); fsHeld = 0; for (let i = 0; i < 6; i++) paintButton(i);
+  screenWrap.appendChild(canvas); canvas.style.width = "";
+  fsRoot.hidden = true;
+  document.documentElement.classList.remove("fs-on");
+  fsBtn.setAttribute("aria-pressed", "false");
+  try { screen.orientation.unlock(); } catch (_) {}
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  if (fsWake) { fsWake.release().catch(() => {}); fsWake = null; }
+  fsNative = false;
+  fitScreen();
+}
+function toggleFs() { if (fsActive) exitFs(); else enterFs(); }
+fsBtn.addEventListener("click", toggleFs);
+document.getElementById("fsExit").addEventListener("click", exitFs);
+document.getElementById("fsReset").addEventListener("click", pressReset);
+document.addEventListener("fullscreenchange", () => { if (fsActive && fsNative && !document.fullscreenElement) exitFs(); });   // Esc or the browser's own exit
+document.addEventListener("visibilitychange", () => { if (fsActive && document.visibilityState === "visible" && !fsWake) holdAwake(); });
+window.addEventListener("resize", () => { if (fsActive) fitFs(); });
+window.addEventListener("orientationchange", () => { if (fsActive) setTimeout(fitFs, 100); });
+try { new ResizeObserver(() => { if (fsActive) fitFs(); }).observe(fsStage); } catch (_) {}
 
 const soundBtn = document.getElementById("soundBtn");
 function toggleSound() {

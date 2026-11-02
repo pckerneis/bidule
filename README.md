@@ -15,7 +15,9 @@ npm run build                               # writes dist/index.html
 
 Open `dist/index.html` in a browser. There is nothing to install for the page itself: everything, WebAssembly included, is inlined in one file.
 
-Keys: arrows or WASD for the D-pad, X/K for A, Z/J for B, R to reset, M for sound. The mouse works on the screen as the optional pointer.
+Keys: arrows or WASD for the D-pad, X/K for A, Z/J for B, R to reset, M for sound, F for full screen. The mouse works on the screen as the optional pointer.
+
+On a phone or tablet, **Full screen** shows the screen in landscape with the D-pad and A/B drawn over it as a semi-transparent overlay: multi-touch, and sliding a finger from one button to another switches buttons. Where the browser allows it, the page also locks landscape and keeps the screen awake. iPhone Safari has no full-screen API for pages, so there the overlay fills the browser window instead.
 
 ## Rust toolchain
 
