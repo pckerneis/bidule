@@ -220,8 +220,8 @@ Optional; carts without it run the same, and faults then show code offsets.
 | 11 | `print` | Text, Int, Int, [Int] | Int |  |
 | 12 | `textwidth` | Text | Int |  |
 | 13 | `fmt` | ArrW, Text | Int |  |
-| 14 | `btn` | Int | Int |  |
-| 15 | `btnp` | Int | Int |  |
+| 14 | `btn` | Int | Int | 0–5 are buttons; 6–7 are reserved for X and Y and read as 0 |
+| 15 | `btnp` | Int | Int | As `btn` |
 | 16 | `haspointer` |  | Int |  |
 | 17 | `mousex` |  | Int |  |
 | 18 | `mousey` |  | Int |  |
@@ -260,6 +260,10 @@ Optional; carts without it run the same, and faults then show code offsets.
 | 51 | `setassetname` | Int, Int, Text | Int |  |
 | 52 | `savecart` | Int | Int | May open a system dialog |
 | 53 | `__mapcell` | Int, Int, Int | Int | Internal: `Maps.NAME[y][x]` |
+| 54 | `menuitem` | Int, Text | Int | Reserved: cart entries in the system menu. Not callable in Bidule 01 |
+| 55 | `menuchosen` |  | Int | Reserved: the entry chosen since the last call, or −1. Not callable in Bidule 01 |
+
+Reserved ids exist so the numbering never moves. The compiler reports their names as reserved and the verifier rejects them until a later version defines them.
 
 Math, `rnd`, `srand`, `copy`, `streq`, `arreq`, `fmt` and `textwidth` run inside the VM, identically on every target. The rest go to the platform runtime. Arguments in brackets are optional.
 
@@ -273,7 +277,7 @@ Math, `rnd`, `srand`, `copy`, `streq`, `arreq`, `fmt` and `textwidth` run inside
 Before the first instruction, every function — reachable or not — must pass:
 
 1. Each opcode is known and each instruction lies inside its function.
-2. Operands are in range: globals, locals (< the function's local slots), arrays, tables, templates, functions, built-in ids, and built-in argument counts. 2D instructions name 2D arrays or tables.
+2. Operands are in range: globals, locals (< the function's local slots), arrays, tables, templates, functions, built-in ids (never a reserved one), and built-in argument counts. 2D instructions name 2D arrays or tables.
 3. Jumps land on an instruction start inside the same function.
 4. The stack depth is the same on every path into an instruction, never negative, never above the declared maximum, and the declared maximum is the deepest point reached.
 5. Control never runs past the end of a function; every `RET` finds exactly one value on the stack.

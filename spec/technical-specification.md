@@ -40,7 +40,7 @@ The microcontroller is the only processor; graphics and audio assets are read st
 | Flash size | TBD; sets maximum cartridge size | TBD |
 | Display | 240×160, 8-bit indexed colour, RGB565 panel | Fixed |
 | Display interface | SPI panel | Proposed |
-| Input | D-pad + buttons; count TBD | TBD |
+| Input | D-pad, A, B and Start (system button); X and Y reserved in software, not fitted. Pads for X and Y TBD | Proposed |
 | Audio out | PWM or I2S to speaker/headphone | TBD |
 | Host link | USB device, mass-storage class | Fixed (prototyped on RP2040) |
 | Radio | Needed for passive exchange; on-chip or module | TBD |
@@ -116,13 +116,35 @@ Decided: entries 0–15 form a curated palette with built-in names, usable as co
 
 **Input**
 
-- Proposed button set: a D-pad and two buttons, A and B, readable by carts as `BTN_LEFT`, `BTN_RIGHT`, `BTN_UP`, `BTN_DOWN` (0–3), `BTN_A` (4) and `BTN_B` (5). A system Reset restarts the cart and is never visible to it. The set MUST map cleanly onto Anbernic-type handheld controls and a desktop keyboard.
-- Proposed: input state sampled once per frame and exposed as a bitmask (bit `i` set while button `i` is held).
-- Proposed: `btn(b)` returns 1 while button `b` is held; `btnp(b)` returns 1 only on the frame it goes from released to held.
-- Proposed default keyboard: arrows or WASD for the D-pad, X or K for A, Z or J for B, R for Reset.
+- Proposed button set: a D-pad and two action buttons, A and B, readable by carts as `BTN_LEFT`, `BTN_RIGHT`, `BTN_UP`, `BTN_DOWN` (0–3), `BTN_A` (4) and `BTN_B` (5). The system owns two more controls that carts never see: Reset, which restarts the cart, and Start, which opens the system menu (see System menu below). The set MUST map cleanly onto Anbernic-type handheld controls and a desktop keyboard.
+- Decided, reserved: `BTN_X` (6) and `BTN_Y` (7). No Bidule 01 device sets them: they always read as released, on the emulator and on handhelds, even when the handheld has X and Y buttons. A cart that reads them therefore behaves the same everywhere, and a later version can switch them on without breaking carts that already do. A cart MUST NOT depend on them in Bidule 01; the compiler SHOULD warn when source uses `BTN_X` or `BTN_Y`.
+- Proposed: input state sampled once per frame and exposed as a bitmask (bit `i` set while button `i` is held). Bits 6 and 7 are reserved for X and Y and are always 0; bits 8 and up are reserved.
+- Proposed: `btn(b)` returns 1 while button `b` is held; `btnp(b)` returns 1 only on the frame it goes from released to held. Both return 0 for a button that does not exist, X and Y included.
+- Proposed default keyboard: arrows or WASD for the D-pad, X or K for A, Z or J for B, Enter or P for Start, R for Reset. C and V are kept free for X and Y.
 
 * Optional pointer, decided: `haspointer()` returns 1 where a mouse exists (the emulator) and 0 on hardware. `mousex()`, `mousey()` and `mouseb()` read it. Editors use it when present; nothing may require it.
-* Proposed for the emulator: a full-screen mode for touch devices. The screen is shown in landscape at the largest whole scale that fits, and the D-pad and A/B are drawn over it as a semi-transparent overlay. Each finger is tracked on its own, so several buttons can be held at once; a finger that slides from one button to another releases the first and presses the second, and the D-pad reads diagonals. The overlay feeds the same button bitmask as the keyboard, so carts cannot tell it apart. A control on the overlay switches between button mode and mouse mode. In mouse mode the buttons are hidden and a finger on the screen drives the pointer (position and left button); in button mode touches on the screen are ignored. A physical mouse works in both modes. System Reset, the mode switch and Exit stay on the host side, outside the cart's reach, in a strip beside the screen (Reset takes a press and hold, since it loses the cart's state): the screen is never under them, so in mouse mode nothing is drawn over it. Where the platform allows it, the mode keeps the browser's own gestures (scroll, pull to refresh, pinch zoom, long press) away from the controls.
+* Proposed for the emulator: a full-screen mode for touch devices. The screen is shown in landscape at the largest whole scale that fits, and the D-pad and A/B are drawn over it as a semi-transparent overlay. Each finger is tracked on its own, so several buttons can be held at once; a finger that slides from one button to another releases the first and presses the second, and the D-pad reads diagonals. The overlay feeds the same button bitmask as the keyboard, so carts cannot tell it apart. A control on the overlay switches between button mode and mouse mode. In mouse mode the buttons are hidden and a finger on the screen drives the pointer (position and left button); in button mode touches on the screen are ignored. A physical mouse works in both modes. System Reset, Menu (Start), the mode switch and Exit stay on the host side, outside the cart's reach, in a strip beside the screen (Reset takes a press and hold, since it loses the cart's state; Menu takes a single press): the screen is never under them, so in mouse mode nothing is drawn over it. Where the platform allows it, the mode keeps the browser's own gestures (scroll, pull to refresh, pinch zoom, long press) away from the controls.
+
+**System menu**
+
+Decided: Start opens a menu that belongs to the system. Bidule 01 ships it; its contents and layout below are Proposed.
+
+- The host draws and handles the menu, never the cart. A cart cannot read Start, hide the menu, change its entries or draw over it. The host takes Start before the cart sees any input, so the menu opens even when the cart is stuck or over its instruction budget.
+- While the menu is open the VM does not run: no `update` or `draw` call, the last frame stays on screen under the menu, and audio is paused, so voices and `audio(t)` resume where they stopped.
+- When the menu closes, every button still held reads as released until the player lets go and presses it again. The press that closed the menu never reaches the cart, and `btnp` does not fire for it.
+- Entries, in order: **Resume**, **Restart** (same effect as the system Reset), **Volume** (left and right; device-wide and kept across carts) and **Quit** (back to the cart shelf, or to the host page in the emulator). The title line shows the cart's title from its metadata.
+- Start again, or B, closes the menu. Start does nothing while a system dialog (`pickcart`, `savecart`) is open; the dialog's own cancel applies.
+- The physical Reset stays a separate path and the menu does not replace it. In the emulator, Reset stands for that physical reset.
+- TBD: further system entries (debug overlay, button test, brightness) and whether editors may add Save and Open to the menu once cart entries exist (see below).
+
+**Reserved: menu entries from carts**
+
+Not callable in Bidule 01. The shape below is settled enough that nothing built now blocks it.
+
+- Built-in ids 54 `menuitem(slot, label)` and 55 `menuchosen()` are reserved in the bytecode (see bytecode.md). Until they are defined, the compiler reports `menuitem` and `menuchosen` as reserved names and the verifier rejects the ids.
+- Polled, not called back: the cart registers its entries, and `menuchosen()` returns the slot chosen since the last call, or −1. A cart reads it in `update()`. There is no new lifecycle function, so the cart header and handler table do not change, and no cart code ever runs while the menu is open.
+- Limits to adopt when enabled: at most 3 entries, labels of at most 16 ASCII characters, no value entries (sliders) at first. Choosing an entry closes the menu.
+- Cart entries sit below the system entries, after a separator and in a distinct style. The system draws them in its own font and palette; a cart cannot style them, hide, reorder or rename a system entry, or imitate one (SEC-9).
 
 **Audio**
 
@@ -384,7 +406,7 @@ fn sum(a[], n) {
 **Constants**
 
 - `const NAME = expr`, top level only. `expr` uses only literals, other constants and operators; it is evaluated at compile time and uses no global slot.
-- Built-in constants: `BTN_LEFT` `BTN_RIGHT` `BTN_UP` `BTN_DOWN` `BTN_A` `BTN_B` (0–5), `SCREEN_W`, `SCREEN_H`.
+- Built-in constants: `BTN_LEFT` `BTN_RIGHT` `BTN_UP` `BTN_DOWN` `BTN_A` `BTN_B` (0–5), `BTN_X` `BTN_Y` (6–7, reserved: they always read as released in Bidule 01), `SCREEN_W`, `SCREEN_H`.
 
 **Audio-local variables**
 
@@ -976,6 +998,7 @@ Every cartridge is untrusted, wherever it came from.
 | SEC-6 | Cartridge parser rejects malformed headers and sizes | Proposed |
 | SEC-7 | Emulator confined to its own folder; no network access from cartridges | Proposed |
 | SEC-8 | Firmware updates authenticated | TBD |
+| SEC-9 | The host owns Start and the system menu: a cartridge cannot read, hide, spoof or alter system entries, and the menu opens even when the cartridge is stuck | Proposed |
 
 A written threat model for peer exchange is still TBD.
 
@@ -996,4 +1019,5 @@ The hardware is the reference: a cartridge MUST behave the same on the emulator 
 - Music assets, emptying a slot, and exporting or importing carts are missing.
 - Constant `Sound` records and byte strings don't compile yet (see bytecode.md › Open).
 - A running cart keeps the assets it loaded with until it resets.
+- The system menu (Start) is missing, and `BTN_X` and `BTN_Y` are not defined yet.
 - `playing()` follows the frame count, and sound still comes from WebAudio nodes rather than a mixer shared with hardware.
