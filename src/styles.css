@@ -149,7 +149,7 @@ html.fs-on, html.fs-on body { overflow: hidden; overscroll-behavior: none; }
   .fs-rotate { display: block; position: absolute; left: 0; right: 0; top: calc(max(10px, env(safe-area-inset-top, 0px)) + 48px); text-align: center; font-size: 13px; color: var(--dim); pointer-events: none; }
 }
 .fs-top {
-  position: absolute; display: flex; justify-content: space-between; pointer-events: none;
+  position: absolute; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; pointer-events: none;
   top: max(10px, env(safe-area-inset-top, 0px));
   left: max(12px, env(safe-area-inset-left, 0px)); right: max(12px, env(safe-area-inset-right, 0px));
 }
@@ -158,6 +158,10 @@ html.fs-on, html.fs-on body { overflow: hidden; overscroll-behavior: none; }
   background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.25); color: rgba(255,255,255,.7);
 }
 .fs-sys:active { background: rgba(255,255,255,.28); }
+.fs-top > :first-child { justify-self: start; }
+.fs-top > :last-child { justify-self: end; }
+.fs.fs-mouse .fs-zone { display: none; }               /* mouse mode: the screen is the input */
+.fs.fs-mouse #fsMode { border-color: rgba(242,181,68,.7); color: var(--accent); }
 .fs-zone { position: absolute; bottom: max(18px, env(safe-area-inset-bottom, 0px)); touch-action: none; }
 .fs-zone span {
   pointer-events: none; box-sizing: border-box; position: relative; display: flex; align-items: center; justify-content: center;
