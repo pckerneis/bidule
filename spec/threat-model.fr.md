@@ -122,7 +122,7 @@ Une cartouche refusée n'est pas lancée, et l'utilisateur voit pourquoi.
 
 ### Temps et ressources
 
-- **Budget d'instructions par frame.** Une cartouche qui le dépasse saute une frame ; si elle le dépasse durablement, la VM propose de l'arrêter. Le bouton « menu » de l'hôte reste toujours actif.
+- **Budget d'instructions par frame.** Une cartouche qui le dépasse saute une frame ; si elle le dépasse durablement, la VM propose de l'arrêter. Le bouton Start de l'hôte, qui ouvre le menu système, reste toujours actif : l'hôte le traite avant que la cartouche ne voie la moindre entrée, et la cartouche ne peut ni le lire, ni masquer le menu, ni en imiter les entrées (SEC-9 de la spécification technique). Les entrées de menu que des cartouches pourront ajouter plus tard sont réservées et affichées par le système, après un séparateur, dans un style distinct.
 - **Pas d'allocation dynamique illimitée.** Toute structure grandissante a un plafond.
 - **Le son** est généré dans des tampons de taille fixe : une cartouche ne peut pas saturer le DSP de l'hôte.
 

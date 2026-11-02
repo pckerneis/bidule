@@ -148,6 +148,6 @@ Because creations arrive from strangers with no one vetting them, the runtime mu
 - [ ] Pick the chip: RP2040, RP2350, ESP32-S3, or RP2040 with a radio module.
 - [ ] Define the passive-exchange model and what a device offers by default.
 - [ ] Decide how emulator and handheld targets take part in sharing.
-- [ ] Choose screen, buttons and audio output parts and check worldwide sourcing.
+- [ ] Choose screen, buttons and audio output parts and check worldwide sourcing. Buttons so far: D-pad, A, B and a system Start; X and Y are reserved in software only, and the hardware stays at two action buttons.
 - [ ] Port the earlier language spec into the Bidule 01 spec and close the review's gaps.
 - [ ] Write a threat model for cartridges and peer exchange.
