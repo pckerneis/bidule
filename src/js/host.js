@@ -347,7 +347,7 @@ window.addEventListener("keydown", e => {
   e.preventDefault(); keyHeld[i] = true; paintButton(i);
 });
 window.addEventListener("keyup", e => { const i = KEYMAP[e.code]; if (i === undefined) return; keyHeld[i] = false; paintButton(i); });
-window.addEventListener("blur", () => { keyHeld.fill(false); touchHeld.fill(0); fsPointers.clear(); fsHeld = 0; pointer.b = 0; for (let i = 0; i < 6; i++) paintButton(i); });
+window.addEventListener("blur", () => { keyHeld.fill(false); touchHeld.fill(0); fsPointers.clear(); fsHeld = 0; pointer.b = 0; for (let i = 0; i < 6; i++) paintButton(i); if (typeof resetRelease === "function") resetRelease(false); });
 window.addEventListener("pointerdown", ensureAudio, { capture: true });
 
 document.querySelectorAll("[data-b]").forEach(el => {
@@ -492,7 +492,36 @@ function exitFs() {
 function toggleFs() { if (fsActive) exitFs(); else enterFs(); }
 fsBtn.addEventListener("click", toggleFs);
 document.getElementById("fsExit").addEventListener("click", exitFs);
-document.getElementById("fsReset").addEventListener("click", pressReset);
+
+// Reset loses the cart's state, so on the overlay it takes a press and hold: the button fills while held,
+// and a plain tap only shows "Hold…". (The R key and the Reset button on the console panel are unchanged.)
+const fsResetEl = document.getElementById("fsReset"), RESET_HOLD_MS = 900;
+let resetFrom = 0, resetRaf = 0, resetHint = 0;
+function resetTick(now) {
+  const p = Math.min(1, (now - resetFrom) / RESET_HOLD_MS);
+  fsResetEl.style.setProperty("--p", p * 100 + "%");
+  if (p < 1) { resetRaf = requestAnimationFrame(resetTick); return; }
+  resetRelease(true); pressReset();
+}
+function resetPress() {
+  if (resetFrom) return;
+  resetFrom = performance.now(); clearTimeout(resetHint);
+  fsResetEl.textContent = "Hold…";
+  resetRaf = requestAnimationFrame(resetTick);
+}
+function resetRelease(done) {
+  if (!resetFrom) return;
+  const tap = !done && performance.now() - resetFrom < 250;
+  cancelAnimationFrame(resetRaf); resetFrom = 0;
+  fsResetEl.style.setProperty("--p", "0%");
+  if (tap) resetHint = setTimeout(() => { fsResetEl.textContent = "Reset"; }, 1500);     // "Hold…" stays up a moment after a tap
+  else fsResetEl.textContent = "Reset";
+}
+fsResetEl.addEventListener("pointerdown", ev => { ev.preventDefault(); try { fsResetEl.setPointerCapture(ev.pointerId); } catch (_) {} resetPress(); });
+["pointerup", "pointercancel", "lostpointercapture"].forEach(t => fsResetEl.addEventListener(t, () => resetRelease(false)));
+fsResetEl.addEventListener("keydown", ev => { if ((ev.code === "Space" || ev.code === "Enter") && !ev.repeat) { ev.preventDefault(); ev.stopPropagation(); resetPress(); } });
+fsResetEl.addEventListener("keyup", ev => { if (ev.code === "Space" || ev.code === "Enter") { ev.stopPropagation(); resetRelease(false); } });
+fsResetEl.addEventListener("blur", () => resetRelease(false));
 fsMode.addEventListener("click", () => setFsMouse(!fsMouse));
 document.addEventListener("fullscreenchange", () => { if (fsActive && fsNative && !document.fullscreenElement) exitFs(); });   // Esc or the browser's own exit
 document.addEventListener("visibilitychange", () => { if (fsActive && document.visibilityState === "visible" && !fsWake) holdAwake(); });
