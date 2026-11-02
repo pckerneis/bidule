@@ -9,7 +9,7 @@ La pire cartouche possible ne doit pouvoir faire qu'une chose : planter elle-mê
 Cinq principes guident toutes les décisions de cette section :
 
 1. **Rien à voler.** Bidule ne collecte ni compte, ni donnée personnelle, ni paiement, ni position. Ce qui n'existe pas ne peut pas fuir.
-2. **Aucune capacité ambiante.** Une cartouche n'a accès qu'à ce que l'API lui donne explicitement, et l'API ne donne jamais accès au système, au réseau ou aux autres cartouches.
+2. **Aucune capacité ambiante.** Une cartouche n'a accès qu'à ce que l'API lui donne explicitement, et l'API ne donne jamais accès au système ni au réseau. Les autres cartouches ne sont lisibles qu'en ressources (tuiles, sprites, audio, cartes), jamais en sauvegardes, code source ou bytecode, et ne sont modifiables qu'avec l'autorisation explicite de l'utilisateur donnée via l'hôte (SEC-4).
 3. **Rien ne s'exécute sans geste humain.** Recevoir n'est pas lancer.
 4. **Simplicité vérifiable.** Des formats bêtes, des parseurs courts, un code assez petit pour être audité et fuzzé en entier.
 5. **Protéger l'utilisateur, jamais contre l'utilisateur.** Le propriétaire garde le droit de reflasher, modifier et inspecter sa machine.
@@ -24,7 +24,7 @@ La section couvre toutes les incarnations de Bidule : console matérielle (RP204
 | --- | --- | --- |
 | Intégrité de l'appareil | L'hôte (console, PC, handheld) ne doit jamais exécuter de code natif venu d'une cartouche | Critique |
 | Disponibilité | L'appareil reste utilisable : pas de gel, pas de brique, pas de stockage saturé | Haute |
-| Sauvegardes et créations locales | Une cartouche ne lit ni n'écrit les données d'une autre | Haute |
+| Sauvegardes et créations locales | Les sauvegardes restent privées ; les ressources d'une cartouche ne sont modifiées qu'avec l'accord explicite de l'utilisateur | Haute |
 | Identité d'auteur | Personne ne peut publier sous la clé d'un autre | Haute |
 | Intégrité des cartouches | Une cartouche reçue est exactement celle que l'auteur a signée | Haute |
 | Expérience des jeunes utilisateurs | Le contenu reçu reste sous contrôle de l'utilisateur ou d'un parent | Moyenne à haute |
@@ -97,7 +97,7 @@ Une cartouche ne reçoit que :
 - un emplacement de sauvegarde privé, de taille fixe, adressé par le hash de la cartouche ;
 - ses propres ressources en lecture seule (tuiles, sprites, audio).
 
-Elle ne reçoit jamais : le système de fichiers, le réseau, la radio, l'horloge murale précise, les autres cartouches, les clés de l'utilisateur. Il n'existe ni FFI, ni chargement de code natif, ni `eval` d'une chaîne en bytecode.
+Elle ne reçoit jamais : le système de fichiers, le réseau, la radio, l'horloge murale précise, les sauvegardes, le code et le bytecode des autres cartouches, les clés de l'utilisateur. Il n'existe ni FFI, ni chargement de code natif, ni `eval` d'une chaîne en bytecode.
 
 Toute capacité future (par exemple un multijoueur local) passe par une API dédiée, bornée, et soumise à une décision explicite dans cette section.
 

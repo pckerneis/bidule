@@ -132,7 +132,7 @@ Decided: Start opens a menu that belongs to the system. Bidule 01 ships it; its 
 - The host draws and handles the menu, never the cart. A cart cannot read Start, hide the menu, change its entries or draw over it. The host takes Start before the cart sees any input, so the menu opens even when the cart is stuck or over its instruction budget.
 - While the menu is open the VM does not run: no `update` or `draw` call, the last frame stays on screen under the menu, and audio is paused, so voices and `audio(t)` resume where they stopped.
 - When the menu closes, every button still held reads as released until the player lets go and presses it again. The press that closed the menu never reaches the cart, and `btnp` does not fire for it.
-- Entries, in order: **Resume**, **Restart** (same effect as the system Reset), **Volume** (left and right; device-wide and kept across carts) and **Quit** (back to the cart shelf, or to the host page in the emulator). The title line shows the cart's title from its metadata.
+- Entries, in order: **Resume**, **Restart** (same effect as the system Reset), **Volume** (left and right; device-wide and kept across carts), **Carts** (the cart shelf; picking one switches to it and puts the current cart on a stack) and **Quit** (back to the cart that switched here, or to the cart shelf if there is none, or to the host page in the emulator). The title line shows the cart's title from its metadata.
 - Start again, or B, closes the menu. Start does nothing while a system dialog (`pickcart`, `savecart`) is open; the dialog's own cancel applies.
 - The physical Reset stays a separate path and the menu does not replace it. In the emulator, Reset stands for that physical reset.
 - TBD: further system entries (debug overlay, button test, brightness) and whether editors may add Save and Open to the menu once cart entries exist (see below).
@@ -249,22 +249,28 @@ update() {
 
 | Call | Effect |
 | --- | --- |
-| `pickcart(kind)` | Shows the system cart picker; the user chooses a cart. Returns a handle, or −1 if cancelled. `kind` names the asset section the editor wants (`"sprites"`, `"sounds"`, ...) |
+| `pickcart(kind)` | Shows the system cart picker; the user chooses a cart, which is the user's explicit authorization to modify it. Returns a handle, or −1 if cancelled. `kind` names the asset section the editor wants (`"sprites"`, `"sounds"`, ...) |
 | `readasset(h, dst, i)` / `writeasset(h, src, i)` | Read or write asset `i` of the picked section into or from an array |
 | `assetcount(h)`, `assetname(h, i, dst)`, `setassetname(h, i, name)` | Inspect and name assets; new names extend the name table |
+| `cartcount()`, `cartinfo(c, dst)` | Proposed. Count the carts on the device and write the title of cart `c` into `dst`; no dialog |
+| `opencart(c, kind)` | Proposed. Opens an asset section of cart `c` for reading, without a dialog; `c` = −1 means the current project. Returns a read-only handle, or −1 |
+| `requestwrite(h)` | Proposed. The system asks the user to let this cart modify the cart behind `h`; returns 1 if granted, 0 if refused. `pickcart` handles are writable from the start |
 | `savecart(h)` | The system asks the user to overwrite the cart or save a copy, then writes it |
 | `opensection(h, kind)` | Proposed. Opens another asset section of the cart behind `h`, without showing the picker; returns a new handle |
 | `cartname(h, dst)` | Proposed. Writes the picked cart's title into `dst`; returns its length |
 | `drawasset(h, i, x, y)` | Proposed. Draws tile or sprite `i` of the picked section at (`x`, `y`), skipping the `palt` index |
 | `status(text)` | Proposed. Sets the system status line; `status("")` clears it |
 
-- An editor sees only the asset section it asked for, of the cart the user picked. Source, bytecode and other sections stay out of reach.
-- Nothing is written until `savecart` and the user's confirmation.
+- **Reading is free.** Any cart may list the carts on the device and read the asset sections of any of them (`opencart`), with no dialog. Source and bytecode are not reachable through this API (the source stays readable in the source viewer). A cart's save slot stays private to that cart.
+- **Writing needs the user.** A handle from `pickcart` is writable because the user chose the cart. A handle from `opencart` is read-only: `writeasset` and `setassetname` on it return −1 until `requestwrite` is granted. The system shows who asks to modify what ("Sprite Editor wants to modify My Game") and the user accepts with A. A grant lasts until the asking cart closes. TBD: an "always for this pair" choice.
+- **Nothing is saved until `savecart`** and the user's confirmation.
+- **Write journal.** Proposed: the system keeps a journal of saves to other carts (asking cart, target, section, time, revision) that the user can read from the system menu, and an undo of the last save per target.
+- **Current project.** Proposed: the system remembers the cart the user last picked for editing. `opencart(-1, kind)` opens it, and the picker highlights it first. The user can clear it from the system menu.
 - readasset and writeasset exchange a slot's raw bytes, one byte per array element, in the layouts defined below. Tiles of the sheet are addressed as slots of kind "tiles".
 
 **Editor support** — Proposed, from building the Sprite Editor in the browser prototype:
 
-- **One pick covers the cart's asset sections.** Choosing a cart in the picker lets the editor call `opensection` on any of its asset sections, never its source or bytecode. A map editor opens `"maps"`, then `"tiles"` of the same cart. `savecart(h)` on any handle from that pick saves every section changed through it, with one confirmation.
+- **One pick covers the cart's asset sections.** Choosing a cart in the picker lets the editor call `opensection` on any of its asset sections. A map editor opens `"maps"`, then `"tiles"` of the same cart. `savecart(h)` on any handle from that pick saves every section changed through it, with one confirmation.
 - **`drawasset`** exists because `spr` draws only from the running cart. Redrawing a 16×4 tile window pixel by pixel took about 55 ms per scroll in the prototype; on hardware it would cost more.
 - **`cartname`** lets an editor show which cart it is editing.
 - **Status line.** The system draws the `status` text over the bottom 9 pixel rows after `draw()`, in the default palette. Every editor then shows its button hints in the same place and style.
@@ -993,7 +999,7 @@ Every cartridge is untrusted, wherever it came from.
 | SEC-1 | Cartridge code runs only in the VM; no native code path | Fixed |
 | SEC-2 | Bytecode verified before first instruction | Fixed |
 | SEC-3 | All VM memory access bounds-checked | Fixed |
-| SEC-4 | A cartridge reads and writes only its own save slot and assets | Fixed |
+| SEC-4 | A cartridge writes only its own save slot, and the assets of another cart only with the user's explicit authorization through the host. It may read other carts' assets, never their save slots, source or bytecode through the API | Proposed |
 | SEC-5 | Received data never executes on receipt | Fixed |
 | SEC-6 | Cartridge parser rejects malformed headers and sizes | Proposed |
 | SEC-7 | Emulator confined to its own folder; no network access from cartridges | Proposed |

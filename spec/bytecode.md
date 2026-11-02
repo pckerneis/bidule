@@ -262,6 +262,10 @@ Optional; carts without it run the same, and faults then show code offsets.
 | 53 | `__mapcell` | Int, Int, Int | Int | Internal: `Maps.NAME[y][x]` |
 | 54 | `menuitem` | Int, Text | Int | Reserved: cart entries in the system menu. Not callable in Bidule 01 |
 | 55 | `menuchosen` |  | Int | Reserved: the entry chosen since the last call, or −1. Not callable in Bidule 01 |
+| 56 | `cartcount` |  | Int |  |
+| 57 | `cartinfo` | Int, ArrW | Int |  |
+| 58 | `opencart` | Int, Text | Int |  |
+| 59 | `requestwrite` | Int | Int | May open a system dialog |
 
 Reserved ids exist so the numbering never moves. The compiler reports their names as reserved and the verifier rejects them until a later version defines them.
 
