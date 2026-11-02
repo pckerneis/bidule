@@ -504,6 +504,28 @@ impl<'p> Vm<'p> {
         self.env.mem.prog.debug.and_then(|d| d.line_at(f.pc))
     }
 
+    /// A fault's message; for an array index, with the array's name and size.
+    pub fn write_fault(&self, w: &mut dyn core::fmt::Write, f: &Fault) -> core::fmt::Result {
+        w.write_str(f.kind.message())?;
+        let FaultKind::OutOfBounds { array, index, size } = f.kind else {
+            return Ok(());
+        };
+        let p = self.program();
+        let name: &[u8] = if array < 0 {
+            p.array_name((array & 0xFF) as u16)
+        } else {
+            match Handle::decode(array) {
+                Some(h) if h.kind == Kind::Pool => p.array_name(h.id),
+                Some(_) => b"constant table",
+                None => b"",
+            }
+        };
+        match core::str::from_utf8(name) {
+            Ok(n) if !n.is_empty() => write!(w, " ({}[{}], size {})", n, index, size),
+            _ => write!(w, " (index {}, size {})", index, size),
+        }
+    }
+
     /// Call trace of the main core, innermost first: (function, pc).
     pub fn trace(&self, out: &mut [(u16, u32)]) -> usize {
         let mut n = 0;

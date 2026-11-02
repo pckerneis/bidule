@@ -25,3 +25,5 @@ jobs:
       # the VM, verifier and runtime build for the RP2040 and the browser, without std
       - run: cargo build -p bidule-bytecode -p bidule-vm -p bidule-runtime --target thumbv6m-none-eabi
       - run: cargo build -p bidule-compiler -p bidule-vm -p bidule-runtime --target wasm32-unknown-unknown
+      # the browser build, and the JS tests that run it
+      - run: npm test

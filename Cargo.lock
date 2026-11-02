@@ -39,3 +39,13 @@ dependencies = [
  "bidule-bytecode",
  "bidule-compiler",
 ]
+
+[[package]]
+name = "bidule-web"
+version = "0.1.0"
+dependencies = [
+ "bidule-bytecode",
+ "bidule-compiler",
+ "bidule-runtime",
+ "bidule-vm",
+]

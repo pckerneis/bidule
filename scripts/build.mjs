@@ -4,8 +4,10 @@
 //                                    dist/artifact.html  (body fragment for hosts that add their own <html>/<head>)
 //
 // The page has no runtime dependencies: sources are concatenated in a fixed order
-// inside one IIFE, and the sample carts in carts/*.bdcart are inlined as strings.
+// inside one IIFE, the sample carts in carts/*.bdcart are inlined as strings, and
+// the console itself (crates/bidule-web, built here with cargo) as base64 WebAssembly.
 
+import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
 import { dirname, join, basename } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,8 +18,11 @@ const read = p => readFileSync(join(root, p), "utf8");
 // Order matters: later modules use names declared by earlier ones.
 export const CORE_MODULES = [
   "carts.js", "samples.js", "palette.js", "font.js", "framebuffer.js",
-  "audio.js", "lexer.js", "parser.js", "values.js", "interpreter.js",
+  "audio.js", "editing.js", "wasm.js",
 ];
+// The source interpreter is no longer part of the page: it stays as the reference
+// the conformance tests compare the Rust console against.
+export const REFERENCE_MODULES = ["lexer.js", "parser.js", "values.js", "interpreter.js"];
 export const HOST_MODULES = ["host.js"];
 
 // carts/<name>.bdcart → SAMPLE_SOURCES key used by samples.js
@@ -50,12 +55,31 @@ export function sampleSources() {
   return out;
 }
 
-/** JavaScript for the console. `withHost: false` gives the DOM-free core used by tests. */
-export function assembleScript({ withHost = true } = {}) {
-  const mods = withHost ? [...CORE_MODULES, ...HOST_MODULES] : CORE_MODULES;
+let wasmBase64 = null;
+/** Builds crates/bidule-web for the browser; cargo makes this a no-op when nothing changed. */
+export function buildWasm() {
+  if (wasmBase64) return wasmBase64;
+  try {
+    execFileSync("cargo", ["build", "--quiet", "--profile", "web", "-p", "bidule-web", "--target", "wasm32-unknown-unknown"], { cwd: root, stdio: "inherit" });
+  } catch (e) {
+    throw new Error("Building the console needs Rust with the WebAssembly target: rustup target add wasm32-unknown-unknown");
+  }
+  const target = process.env.CARGO_TARGET_DIR || join(root, "target");
+  wasmBase64 = readFileSync(join(target, "wasm32-unknown-unknown/web/bidule_web.wasm")).toString("base64");
+  return wasmBase64;
+}
+
+/**
+ * JavaScript for the console. `withHost: false` gives the DOM-free core used by tests,
+ * with the reference interpreter; `wasm: false` leaves the WebAssembly out, for tools
+ * that only need the reference.
+ */
+export function assembleScript({ withHost = true, wasm = true } = {}) {
+  const mods = withHost ? [...CORE_MODULES, ...HOST_MODULES] : [...CORE_MODULES, ...REFERENCE_MODULES];
   const body = [
     '"use strict";',
     "const W = 240, H = 160;",
+    `const BIDULE_WASM = "${wasm ? buildWasm() : ""}";`,
     `const SAMPLE_SOURCES = ${JSON.stringify(sampleSources(), null, 2)};`,
     `const MONOGRAM_ROWS = [${monogramRows().join(",")}];`,
     ...mods.map(m => `\n/* ---- src/js/${m} ---- */\n` + read(join("src/js", m))),

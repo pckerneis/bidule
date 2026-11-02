@@ -56,3 +56,20 @@ test("untouched samples update, edited ones are kept", { skip: !JSDOM && "jsdom 
   await wait(150);
   assert.equal($("cartSel").options[0].textContent, "Blink edited · sample");
 });
+
+test("the page shows compile errors, survives an endless loop, and resets", { skip: !JSDOM && "jsdom not installed" }, async () => {
+  const { $, w, errors } = boot();
+  await wait(100);
+  $("code").value = "draw() {\n  nope()\n}";
+  $("runBtn").click();
+  assert.match($("statusText").textContent, /Can't load, line 2/);
+  $("code").value = "update() {\n  while (1) {\n  }\n}";
+  $("runBtn").click();
+  await wait(150);
+  assert.match($("statusText").textContent, /update\(\) is taking more than one frame/);
+  $("code").value = "// @title  Fine\ndraw() {\n  cls(4)\n}";
+  $("runBtn").click();
+  await wait(100);
+  assert.equal(w.__fb[0], 4);
+  assert.deepEqual(errors, []);
+});

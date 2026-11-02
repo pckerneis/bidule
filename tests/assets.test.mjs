@@ -19,8 +19,7 @@ test("every sample cart loads and runs 120 frames", () => {
 test("asset names resolve; unknown names suggest a fix", () => {
   const ok = makeHarness(core, "t", [cart("t", "var m = 0\ndraw() {\n  m = Maps.BACKDROP[2][3] + fget(1, 0)\n  spr(Sprites.PLAYER, 0, 0)\n  play(Sounds.CATCH)\n}")]);
   ok.frame();
-  const bad = makeHarness(core, "t", [cart("t", "draw() {\n  spr(Sprites.PLAYR, 0, 0)\n}")]);
-  assert.throws(() => bad.frame(), /did you mean Sprites.PLAYER/);
+  assert.throws(() => makeHarness(core, "t", [cart("t", "draw() {\n  spr(Sprites.PLAYR, 0, 0)\n}")]), /did you mean Sprites.PLAYER/);
 });
 
 test("editing API: pick, read, write, append, name, save", () => {
@@ -59,7 +58,7 @@ init() {
   }
 }`;
   const h = makeHarness(core, "t", [cart("t", "")]);
-  const c = core.makeVM(src, { debug: true, pointer: h.pointer, sections: () => h.carts.t.sections, cartSections: id => h.carts[id].sections });
+  const c = core.makeWasmVM(src, { debug: true, pointer: h.pointer, sections: () => h.carts.t.sections, cartSections: id => h.carts[id].sections });
   const task = c.initTask();
   let r = task.next(); assert.equal(r.value.type, "pick");
   r = task.next(null); assert.equal(r.value.type, "pick");

@@ -2,11 +2,12 @@
 import vm from "node:vm";
 import { assembleScript } from "../scripts/build.mjs";
 
-const EXPORTS = ["makeVM", "makeSampleCart", "SAMPLE_IDS", "cloneSection", "emptySections", "fb", "BErr", "Fx", "W", "H"];
+const EXPORTS = ["makeVM", "makeWasmVM", "sectionImages", "makeSampleCart", "SAMPLE_IDS", "cloneSection", "emptySections", "fb", "BErr", "Fx", "W", "H"];
 
-export function loadCore() {
-  const ctx = vm.createContext({ console, performance, btoa, atob, Math, Date });
-  vm.runInContext(assembleScript({ withHost: false }) + `\n;globalThis.__core = { ${EXPORTS.join(", ")} };`, ctx);
+/** The console core. Tests of the shipped console use `core.makeWasmVM`; `makeVM` is the reference interpreter. */
+export function loadCore({ wasm = true } = {}) {
+  const ctx = vm.createContext({ console, performance, btoa, atob, Math, Date, WebAssembly });
+  vm.runInContext(assembleScript({ withHost: false, wasm }) + `\n;globalThis.__core = { ${EXPORTS.join(", ")} };`, ctx);
   return ctx.__core;
 }
 
@@ -15,7 +16,7 @@ export function loadCore() {
  * System dialogs are answered from `answers` in order (a cart id for pickcart,
  * "over" / "copy" / null for savecart).
  */
-export function makeHarness(core, runningId, extraCarts = []) {
+export function makeHarness(core, runningId, extraCarts = [], engine = core.makeWasmVM) {
   const carts = {};
   for (const id of core.SAMPLE_IDS) { const c = core.makeSampleCart(id); carts[c.id] = c; }
   for (const c of extraCarts) carts[c.id] = c;
@@ -30,12 +31,13 @@ export function makeHarness(core, runningId, extraCarts = []) {
     setStatusLine: t => { status.text = t; },
     audioFault: e => { throw e; },
   };
-  const vmi = core.makeVM(running.source, host);
+  const vmi = engine(running.source, host);
   let frameNo = 0;
   const asked = [];
   function drain(task, answers) {
     let r = task.next();
     while (!r.done) {
+      if (r.value.type === "late") { r = task.next(); continue; }
       asked.push(r.value.type);
       const a = answers.shift();
       if (r.value.type === "save") {
@@ -63,9 +65,9 @@ export function makeHarness(core, runningId, extraCarts = []) {
 export const BTN = { L: 1, R: 2, U: 4, D: 8, A: 16, B: 32 };
 
 /** Runs a cart from source alone (no assets) and returns the console core and VM. */
-export function runSource(core, source, { frames = 1, debug = true } = {}) {
+export function runSource(core, source, { frames = 1, debug = true, engine = core.makeWasmVM } = {}) {
   const sections = core.emptySections();
-  const v = core.makeVM(source, { debug, pointer: { x: 0, y: 0, b: 0 }, sections: () => sections, cartSections: () => sections, cartTitle: () => "Test", setStatusLine: () => {}, audioFault: e => { throw e; } });
+  const v = engine(source, { debug, pointer: { x: 0, y: 0, b: 0 }, sections: () => sections, cartSections: () => sections, cartTitle: () => "Test", setStatusLine: () => {}, audioFault: e => { throw e; } });
   const drain = t => { const r = t.next(); if (!r.done) throw new Error("unexpected system dialog"); };
   drain(v.initTask());
   for (let f = 0; f < frames; f++) drain(v.frameTask(f, 0));

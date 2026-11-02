@@ -2,17 +2,18 @@
 
 Browser emulator and default apps for **Bidule 01**, an open fantasy console built around easy-to-source hardware (240×160 indexed screen, D-pad, A/B).
 
-The emulator runs `.bdcart` source directly, following the [Bidule 01 technical specification](spec/technical-specification.md): the cart language (int and 16.16 `fix`, records, enums, constant tables, string interpolation), the asset sections (sprite sheet, maps, sounds, palette), the editing API and the system dialogs.
+The emulator compiles `.bdcart` source to bytecode and runs it, following the [Bidule 01 technical specification](spec/technical-specification.md): the cart language (int and 16.16 `fix`, records, enums, constant tables, string interpolation), the asset sections (sprite sheet, maps, sounds, palette), the editing API and the system dialogs.
 
-The repository also holds the Rust toolchain that will replace that interpreter everywhere: the compiler, the bytecode verifier, the VM and the console runtime, all `no_std`, following the [bytecode and cart image format](spec/bytecode.md).
+The console itself is written in Rust: the compiler, the bytecode verifier, the VM and the runtime, following the [bytecode and cart image format](spec/bytecode.md). The page runs them as WebAssembly; the same `no_std` crates build for the hardware.
 
 ## Run it
 
 ```sh
-npm run build        # writes dist/index.html
+rustup target add wasm32-unknown-unknown    # once
+npm run build                               # writes dist/index.html
 ```
 
-Open `dist/index.html` in a browser. There is nothing to install for the page itself: everything is inlined in one file.
+Open `dist/index.html` in a browser. There is nothing to install for the page itself: everything, WebAssembly included, is inlined in one file.
 
 Keys: arrows or WASD for the D-pad, X/K for A, Z/J for B, R to reset, M for sound. The mouse works on the screen as the optional pointer.
 
@@ -34,8 +35,9 @@ cargo test --workspace                                         # Node is needed 
 | `bidule-vm` | Interpreter with fixed RAM, instruction budget, debug and release faults, native math and text (`no_std`, no allocation) |
 | `bidule-runtime` | Renderer, Monogram font, input, sound requests, asset access: the system side of the API (`no_std`) |
 | `bidule-cli` | `bidule build`, `run` (headless), `dis`, `check`, `unpack` |
+| `bidule-web` | The compiler, VM and runtime as a plain WebAssembly interface for the page, with the editing API bridged to the page's cart shelf |
 
-Tests cover the language end to end, the format, hostile carts (mutated images and random bytecode must be rejected or run safely), pixel-for-pixel conformance with the JS emulator on every sample cart, and the compiler's memory use.
+Tests cover the language end to end, the format, hostile carts (mutated images and random bytecode must be rejected or run safely), pixel-for-pixel conformance with the JS reference interpreter on every sample cart, natively and as WebAssembly, and the compiler's memory use.
 
 ## Layout
 
@@ -43,13 +45,13 @@ Tests cover the language end to end, the format, hostile carts (mutated images a
 | --- | --- |
 | `spec/` | The specifications: technical spec, bytecode format, design document, threat model |
 | `crates/` | The Rust toolchain (see above) |
-| `src/js/` | The console, one module per concern, concatenated in the order listed in `scripts/build.mjs` |
+| `src/js/` | The page around the console, one module per concern, concatenated in the order listed in `scripts/build.mjs` |
 | `src/shell.html`, `src/styles.css` | The page around the screen: device, cart shelf, code editor |
 | `carts/` | Sample carts and default apps as `.bdcart` source; their asset data lives in `src/js/samples.js` |
 | `fonts/monogram/` | Monogram bitmap (CC0) and its credits; the build turns it into the console font |
-| `scripts/build.mjs` | Builds `dist/index.html` (standalone) and `dist/artifact.html` (body fragment) |
-| `scripts/conformance.mjs` | Exports sample assets and dumps JS framebuffers for the Rust conformance tests |
-| `tests/` | Node tests: language, assets and editing API, a scripted Sprite Editor session, the page in a simulated browser |
+| `scripts/build.mjs` | Builds the WebAssembly, then `dist/index.html` (standalone) and `dist/artifact.html` (body fragment) |
+| `scripts/conformance.mjs` | Exports sample assets and dumps the reference interpreter's framebuffers for the Rust conformance tests |
+| `tests/` | Node tests, on the WebAssembly console: language, assets and editing API, a scripted Sprite Editor session, conformance, the page in a simulated browser |
 
 ### Modules
 
@@ -57,11 +59,12 @@ Tests cover the language end to end, the format, hostile carts (mutated images a
 | --- | --- |
 | `carts.js` | Cart model, asset sections, (de)serialization |
 | `samples.js` | Sample carts with their sprites, maps and sounds |
-| `palette.js`, `font.js`, `framebuffer.js` | 256-entry RGB565 palette, Monogram 6×9 font, 8-bit framebuffer and primitives |
+| `palette.js`, `font.js`, `framebuffer.js` | 256-entry RGB565 palette, Monogram 6×9 font, 8-bit framebuffer and primitives, for system dialogs and the display |
 | `audio.js` | 4 synth voices for `Sound` values, bytebeat `audio(t)` |
-| `lexer.js`, `parser.js`, `values.js` | Source → AST, runtime value types |
-| `interpreter.js` | Resumable interpreter (generators), built-ins, asset names, editing API |
+| `editing.js` | The shelf's side of the editing API: handles on picked carts' asset sections |
+| `wasm.js` | Runs a cart on the WebAssembly console: compile, load, resumable tasks, assets in their on-disk layout |
 | `host.js` | Shelf, main loop, system dialogs, input, code editor |
+| `lexer.js`, `parser.js`, `values.js`, `interpreter.js` | Not in the page: the earlier source interpreter, kept as the reference for conformance tests |
 
 ## Default apps
 
@@ -78,9 +81,9 @@ npm test
 
 ## Known gaps
 
-- The browser emulator still interprets source: the Rust compiler and VM aren't wired into the page yet (next: a WebAssembly build). Until then, compile-time errors in the browser appear when a line first runs.
-- The Rust compiler doesn't meet the spec's 128 KB working-RAM budget yet (about 700 KB for the Sprite Editor). It doesn't compile constant `Sound` records in source, music or byte strings, and the Rust runtime's editing API stops at `pickcart`, `savecart` and `status`.
-- In the browser, `rnd` uses the browser's generator, so sequences are not reproducible. The Rust VM uses a seeded xorshift32.
+- The Rust compiler doesn't meet the spec's 128 KB working-RAM budget yet (about 700 KB for the Sprite Editor). It doesn't compile constant `Sound` records in source, music or byte strings: in the page these are load errors.
+- `readasset` and `writeasset` move raw bytes, so they expect `int` arrays: a `fix` array doesn't get the converted values the reference interpreter gave.
+- A running cart sees its assets as they were when it loaded. If an editor saves into the running cart, the changes show after a reset.
 - Music assets and slot emptying are not implemented; carts can't be exported or imported as files yet.
 
 ## Credits
