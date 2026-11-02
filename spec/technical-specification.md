@@ -988,12 +988,11 @@ The hardware is the reference: a cartridge MUST behave the same on the emulator 
 - Proposed: one portable runtime codebase built for MCU firmware, desktop and handheld Linux.
 - TBD: supported desktop OSes and minimum specs; Anbernic firmware targets.
 
-**Rust toolchain** — the compiler, verifier, VM and runtime in `crates/` draw the same frames as the browser prototype for every sample cart, pixel for pixel, including gameplay with input and random numbers (`crates/bidule-cli/tests/conformance.rs`). The JS emulator stays the reference for the editing API until the Rust runtime implements it.
+**Rust toolchain** — the compiler, verifier, VM and runtime in `crates/` draw the same frames as the earlier source interpreter for every sample cart, pixel for pixel, including gameplay with input and random numbers, natively (`crates/bidule-cli/tests/conformance.rs`) and as WebAssembly (`tests/wasm.test.mjs`). That interpreter stays in `src/js/` as the reference for these tests, not as part of the emulator.
 
-**Browser prototype** — [Bidule 01](https://claude.ai/artifact/GjRorycErA1bFKurUzPZfW) runs `.bdcart` source in the browser to try the language and API. It is not conformant yet:
+**Browser emulator** — the page runs that toolchain as WebAssembly (`crates/bidule-web`): it compiles a cart's source when it loads, verifies the image and runs it on the VM, so compile-time errors appear at load and `rnd` is the VM's seeded generator. The page owns the cart shelf, the system dialogs and audio output; the editing API crosses to it through one imported function, because it needs the shelf. Each loaded cart gets a new WebAssembly instance. Not conformant yet:
 
-- It interprets source directly: no compiler, bytecode or verifier. Compile-time errors appear when the line first runs.
-- Asset sections, the editing API, system dialogs, the pointer and Monogram text are in. Music assets, emptying a slot, and exporting or importing carts are missing.
-- Int-to-fix promotion in `? :` is missing. The editor-support calls above are implemented, and the Sprite Editor uses all four.
-- `rnd` uses the browser's generator, so sequences are not reproducible.
-- The frame budget is 5,000,000 interpreter steps, not an instruction count.
+- Music assets, emptying a slot, and exporting or importing carts are missing.
+- Constant `Sound` records and byte strings don't compile yet (see bytecode.md › Open).
+- A running cart keeps the assets it loaded with until it resets.
+- `playing()` follows the frame count, and sound still comes from WebAudio nodes rather than a mixer shared with hardware.

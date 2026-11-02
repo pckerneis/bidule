@@ -303,9 +303,11 @@ Verification needs one byte of scratch per byte of the largest function (at most
 | `bidule-vm` | Interpreter, native math and text | `no_std`, no allocation, about 30 KB of RAM |
 | `bidule-runtime` | Renderer, Monogram font, the system side of the API | `no_std`, no allocation |
 | `bidule-cli` | `bidule build`, `run`, `dis`, `check`, `unpack` | Desktop |
+| `bidule-web` | The above as a WebAssembly module for the page, no generated bindings | Browser |
 
 **Open**
 
 - The compiler does not meet the 128 KB working-RAM budget yet: compiling Sprite Editor (17 KB of source) peaks around 700 KB, because the whole syntax tree is kept in memory. Planned: compile one function at a time, borrow names from the source, and stream sections out.
 - Constant `Sound` records in source, the music format, and byte strings are not compiled yet.
-- The runtime's editing API covers `pickcart`, `savecart` and `status`; reading and writing assets of another cart needs the platform's cart shelf.
+- `bidule-runtime`'s editing API covers `pickcart`, `savecart` and `status`; reading and writing assets of another cart needs the platform's cart shelf. In the browser, `bidule-web` sends these built-ins to the page. A shared implementation for hardware is still to come.
+- `readasset` and `writeasset` exchange raw array elements. The VM doesn't track element types, so `fix` arrays don't get the converted values the spec's "one byte per array element" suggests. To decide: define these as `int` arrays only and have the compiler enforce it.

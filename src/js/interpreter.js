@@ -6,19 +6,6 @@ const BUILTIN_CONSTS = new Map([["BTN_LEFT", 0], ["BTN_RIGHT", 1], ["BTN_UP", 2]
   ["SCREEN_W", W], ["SCREEN_H", H], ["SQUARE", 0], ["TRIANGLE", 1], ["SAW", 2], ["NOISE", 3]]);
 PAL_NAMES.forEach((n, i) => BUILTIN_CONSTS.set(n, i));
 const ASSET_PREFIXES = new Set(["Sprites", "Maps", "Sounds", "Music"]);
-const ASSET_KINDS = { tiles: "sprites", sprites: "sprites", maps: "maps", sounds: "sounds", palette: "palette" };
-class SysReq { constructor(o) { Object.assign(this, o); } }
-const midiFreq = n => 440 * Math.pow(2, (n - 69) / 12);
-function soundDesc(b) {
-  const u16 = i => b[i] | (b[i + 1] << 8);
-  const n = b[3];
-  return {
-    wave: b[0] & 3, vol: b[1] / 255, duty: b[2] / 255, from: u16(4), to: u16(6), time: u16(8) / 1000,
-    attack: u16(10) / 1000, release: u16(12) / 1000, step: Math.max(0.01, u16(14) / 1000),
-    seq: n ? Array.from(b.subarray(16, 16 + n), m => m ? midiFreq(m) : null) : null
-  };
-}
-
 function makeVM(src, host) {
   const { toks, meta } = lex(src);
   const P = new Parser(toks).program();
@@ -26,7 +13,6 @@ function makeVM(src, host) {
   let frame = null, depth = 0, steps = 0, budget = 5_000_000, audioMode = false;
   let input = 0, prevInput = 0;
   const cues = new Int32Array(8);
-  const handles = [];
 
   const globals = new Map(), consts = new Map(), avars = new Map(), records = new Map(), enums = new Map(), fns = new Map(), sprites = new Map();
   const err = (line, msg) => { throw new BErr(msg, line); };
@@ -67,56 +53,8 @@ function makeVM(src, host) {
     }
   }
   function textArg(v, line) { if (v instanceof TextV) return v.s; if (v instanceof Arr || v instanceof Row) return arrText(v); err(line, "expected text"); }
-  function hget(v, line) {
-    const H_ = handles[ti(v, line)];
-    if (!H_) err(line, `${ti(v, line)} is not a cart handle; get one from pickcart(kind)`);
-    return H_;
-  }
-  function slotCount(H_) {
-    switch (H_.kind) { case "tiles": return TILE_COUNT; case "palette": return 1; default: return H_.sec.slots.length; }
-  }
-  function slotBytes(H_, i, line) {
-    const n = slotCount(H_);
-    if (i < 0 || i >= n) err(line, `slot ${i} doesn't exist; this ${H_.kind} section has ${n}`);
-    const s = H_.sec;
-    switch (H_.kind) {
-      case "tiles": { const b = new Uint8Array(65); b.set(s.sheet.subarray(i * 64, i * 64 + 64)); b[64] = s.flags[i]; return b; }
-      case "sprites": { const sl = s.slots[i]; return sl.empty ? new Uint8Array(0) : Uint8Array.of(sl.tile & 255, sl.tile >> 8, sl.w, sl.h); }
-      case "maps": { const m = s.slots[i]; if (!m.w) return new Uint8Array(0); const b = new Uint8Array(4 + m.cells.length * 2); b.set([m.w & 255, m.w >> 8, m.h & 255, m.h >> 8]); b.set(u16bytes(m.cells), 4); return b; }
-      case "sounds": return s.slots[i].bytes.slice();
-      case "palette": { const w = s ? s.words : new Uint16Array(256); if (!s) PAL_DEFAULT.forEach((v, k) => w[k] = v); return u16bytes(w).slice(); }
-    }
-  }
-  function writeSlot(H_, srcArr, i, line) {
-    const vals = (srcArr instanceof Row ? srcArr.arr.data.slice(srcArr.base, srcArr.base + srcArr.n) : srcArr.data).map(v => (v instanceof Fx ? v.r >> 16 : v) & 255);
-    const need = n => { if (vals.length < n) err(line, `writeasset needs ${n} values for this ${H_.kind} slot; the array holds ${vals.length}`); return Uint8Array.from(vals.slice(0, n)); };
-    const n = slotCount(H_), s = H_.sec;
-    const fixed = H_.kind === "tiles" || H_.kind === "palette";
-    if (i < 0 || i > n || (fixed && i === n)) err(line, `slot ${i} can't be written; this ${H_.kind} section has ${n} slots${fixed ? "" : " (use " + n + " to append)"}`);
-    switch (H_.kind) {
-      case "tiles": { const b = need(65); s.sheet.set(b.subarray(0, 64), i * 64); s.flags[i] = b[64]; break; }
-      case "sprites": {
-        const b = need(4); const tile = b[0] | (b[1] << 8);
-        if (!b[2] || !b[3]) err(line, "a sprite needs a width and height of at least 1 tile");
-        if ((tile % SHEET_COLS) + b[2] > SHEET_COLS || Math.floor(tile / SHEET_COLS) + b[3] > TILE_COUNT / SHEET_COLS) err(line, "this sprite extends past the edge of the sheet");
-        const old = s.slots[i]; s.slots[i] = { name: old ? old.name : "", tile, w: b[2], h: b[3] }; break;
-      }
-      case "maps": {
-        if (vals.length < 4) err(line, "a map slot starts with width and height (2 bytes each)");
-        const w = vals[0] | (vals[1] << 8), h = vals[2] | (vals[3] << 8);
-        const b = need(4 + w * h * 2);
-        const old = s.slots[i]; s.slots[i] = { name: old ? old.name : "", w, h, cells: bytesU16(b.subarray(4)) }; break;
-      }
-      case "sounds": {
-        if (vals.length < 4) err(line, "a sound slot is a 16-byte record followed by its notes");
-        const b = need(16 + vals[3]);
-        const old = s.slots[i]; s.slots[i] = { name: old ? old.name : "", bytes: b }; break;
-      }
-      case "palette": { const b = need(512); H_.sec = s || { rev: 0, words: null }; H_.sec.words = bytesU16(b); break; }
-    }
-    H_.dirty = true;
-    return 1;
-  }
+  const { handles, slotCount, slotBytes, slotOf, writeSlot, pickFinish, openSection, nameOf, setName, drawInfo, saveGroup } = makeEditing(host, err);
+  function hget(v, line) { return slotOf(ti(v, line), line); }
   const B = (arity, fn, audioOnly) => ({ arity, fn, audioOnly });
   const BUILTINS_IMPL = {
     cls: B([0, 1], (a, l) => { fb.fill(a.length ? ci(a[0], l) : 0); return 0; }),
@@ -228,47 +166,15 @@ function makeVM(src, host) {
     cuecount: B([1, 1], (a, l) => { const n = ti(a[0], l); if (n < 0 || n > 7) err(l, `cue must be 0 to 7, got ${n}`); return cues[n]; }, true),
 
     // ---- editing API (spec: Storage, USB and cartridge format › Editing API) ----
-    pickcart: B([1, 1], (a, l) => {
-      const kind = textArg(a[0], l);
-      if (kind === "music") err(l, "music assets aren't supported yet");
-      const secName = ASSET_KINDS[kind];
-      if (!secName) err(l, `unknown asset kind "${kind}"; use "tiles", "sprites", "maps", "sounds" or "palette"`);
-      return new SysReq({ type: "pick", kind, finish: cartId => {
-        if (cartId == null) return -1;
-        const pick = { cartId };          // shared by every handle opened from this pick
-        const sec = cloneSection(secName, host.cartSections(cartId)[secName]);
-        handles.push({ pick, kind, secName, sec, dirty: false });
-        return handles.length - 1;
-      } });
-    }),
+    pickcart: B([1, 1], (a, l) => pickFinish(textArg(a[0], l), l)),
     // Proposed (spec › Editor support): another asset section of an already-picked cart
-    opensection: B([2, 2], (a, l) => {
-      const H_ = hget(a[0], l), kind = textArg(a[1], l);
-      if (kind === "music") err(l, "music assets aren't supported yet");
-      const secName = ASSET_KINDS[kind];
-      if (!secName) err(l, `unknown asset kind "${kind}"; use "tiles", "sprites", "maps", "sounds" or "palette"`);
-      // tiles and sprites live in one section: share it so edits through either handle agree
-      const same = handles.find(x => x.pick === H_.pick && x.secName === secName);
-      const sec = same ? same.sec : cloneSection(secName, host.cartSections(H_.pick.cartId)[secName]);
-      handles.push({ pick: H_.pick, kind, secName, sec, dirty: false });
-      return handles.length - 1;
-    }),
+    opensection: B([2, 2], (a, l) => openSection(ti(a[0], l), textArg(a[1], l), l)),
     cartname: B([2, 2], (a, l) => {
-      const H_ = hget(a[0], l);
-      return BUILTINS_IMPL.fmt.fn([a[1], new TextV(host.cartTitle(H_.pick.cartId))], l);
+      return BUILTINS_IMPL.fmt.fn([a[1], new TextV(host.cartTitle(hget(a[0], l).pick.cartId))], l);
     }),
     drawasset: B([4, 4], (a, l) => {
-      const H_ = hget(a[0], l), i = ti(a[1], l), x = ti(a[2], l), y = ti(a[3], l);
-      if (H_.secName !== "sprites") err(l, `drawasset draws tiles or sprites, not ${H_.kind}`);
-      const s = H_.sec;
-      if (H_.kind === "tiles") {
-        if (i < 0 || i >= TILE_COUNT) err(l, `tile ${i} doesn't exist`);
-        drawTile(s.sheet, i, x, y);
-      } else {
-        const sl = s.slots[i];
-        if (!sl) err(l, `sprite ${i} doesn't exist`);
-        if (!sl.empty) for (let ty = 0; ty < sl.h; ty++) for (let tx = 0; tx < sl.w; tx++) drawTile(s.sheet, sl.tile + ty * SHEET_COLS + tx, x + tx * 8, y + ty * 8);
-      }
+      const H_ = hget(a[0], l), x = ti(a[2], l), y = ti(a[3], l), d = drawInfo(H_, ti(a[1], l), l);
+      for (let ty = 0; ty < d.h; ty++) for (let tx = 0; tx < d.w; tx++) drawTile(H_.sec.sheet, d.tile + ty * SHEET_COLS + tx, x + tx * 8, y + ty * 8);
       return 0;
     }),
     status: B([1, 1], (a, l) => { host.setStatusLine(textOf(a[0], l)); return 0; }),
@@ -285,31 +191,17 @@ function makeVM(src, host) {
     writeasset: B([3, 3], (a, l) => {
       const H_ = hget(a[0], l), s = a[1];
       if (!(s instanceof Arr || s instanceof Row)) err(l, "writeasset writes from an array: writeasset(h, src, i)");
-      return writeSlot(H_, s, ti(a[2], l), l);
+      const vals = (s instanceof Row ? s.arr.data.slice(s.base, s.base + s.n) : s.data).map(v => (v instanceof Fx ? v.r >> 16 : v) & 255);
+      return writeSlot(H_, vals, ti(a[2], l), l);
     }),
     assetcount: B([1, 1], (a, l) => slotCount(hget(a[0], l))),
     assetname: B([3, 3], (a, l) => {
       const H_ = hget(a[0], l), i = ti(a[1], l), d = a[2];
       if (!(d instanceof Arr || d instanceof Row)) err(l, "assetname writes into an array: assetname(h, i, dst)");
-      const named = H_.kind !== "tiles" && H_.kind !== "palette";
-      if (i < 0 || i >= slotCount(H_)) err(l, `slot ${i} doesn't exist`);
-      const name = named ? (H_.sec.slots[i].name || "") : "";
-      return BUILTINS_IMPL.fmt.fn([d, new TextV(name)], l);
+      return BUILTINS_IMPL.fmt.fn([d, new TextV(nameOf(H_, i, l))], l);
     }),
-    setassetname: B([3, 3], (a, l) => {
-      const H_ = hget(a[0], l), i = ti(a[1], l), name = textArg(a[2], l);
-      if (H_.kind === "tiles" || H_.kind === "palette") err(l, `${H_.kind} have no names; name sprites, maps or sounds`);
-      if (i < 0 || i >= slotCount(H_)) err(l, `slot ${i} doesn't exist`);
-      if (name && !/^[A-Za-z_][A-Za-z0-9_]{0,23}$/.test(name)) err(l, `"${name}" is not a valid asset name (letters, digits and _, at most 24 characters)`);
-      if (name && H_.sec.slots.some((s, k) => k !== i && s.name === name)) err(l, `another asset is already named ${name}`);
-      H_.sec.slots[i].name = name; H_.dirty = true; return 1;
-    }),
-    savecart: B([1, 1], (a, l) => {
-      const H_ = hget(a[0], l);
-      // one confirmation saves every section opened through this pick
-      const group = handles.filter(x => x.pick === H_.pick);
-      return new SysReq({ type: "save", handle: H_, handles: group, finish: r => r ? 1 : 0 });
-    }),
+    setassetname: B([3, 3], (a, l) => setName(hget(a[0], l), ti(a[1], l), textArg(a[2], l), l)),
+    savecart: B([1, 1], (a, l) => saveGroup(hget(a[0], l))),
   };
   const BI = BUILTINS_IMPL;
 

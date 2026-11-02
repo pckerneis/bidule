@@ -80,6 +80,7 @@ function persistShelf(now) {
 /* ---------- state ---------- */
 let vm = null, halted = null, frameNo = 0, debugMode = store.get(MODE_KEY) !== "release";
 let task = null;            // a paused or running cart task (generator)
+let late = false;           // the running cart has gone over its frame budget
 let dialog = null;          // the open system dialog, if any
 const pointer = { x: 0, y: 0, b: 0 };       // the real mouse
 const cartPointer = { x: 0, y: 0, b: 0 };   // what carts see
@@ -152,14 +153,14 @@ function halt(stage, e) {
 function load() {
   const cart = currentCart();
   stopAllVoices(); closeDialog(null, true);
-  halted = null; vm = null; task = null; frameNo = 0;
+  halted = null; vm = null; task = null; frameNo = 0; late = false;
   bbSample = 0; bbLastT = -1; bbVal = 128;
   transparent = 0; resetPalette(); fb.fill(0); statusLine = "";
   if (cart.sections.palette) pal565.set(cart.sections.palette.words);
   led.className = "led on"; ledtxt.textContent = "POWER";
   setTitle(cartTitle(cart));
   try {
-    vm = makeVM(cart.source, {
+    vm = makeWasmVM(cart.source, {
       debug: debugMode,
       pointer: cartPointer,
       sections: () => currentCart().sections,
@@ -171,7 +172,10 @@ function load() {
   } catch (e) { halt("load", e); return false; }
   task = vm.initTask();
   drive();
-  if (!halted) setStatus(`Running “${cartTitle(cart)}”. Ctrl+Enter reloads after edits.`, false);
+  if (!halted) {
+    const w = vm.warnings[0];
+    setStatus(w ? `Running “${cartTitle(cart)}”. Warning, line ${w.line}: ${w.message}` : `Running “${cartTitle(cart)}”. Ctrl+Enter reloads after edits.`, false);
+  }
   return !halted;
 }
 function setTitle(t) { bezelTitle.textContent = t.toUpperCase(); cartName.textContent = t; }
@@ -179,6 +183,10 @@ function drive(answer) {
   try {
     const r = task.next(answer);
     if (r.done) { task = null; return true; }
+    if (r.value.type === "late") {     // out of budget: the handler goes on next frame
+      if (debugMode && !late) { late = true; setStatus(`${r.value.stage}() is taking more than one frame.`, false); }
+      return false;
+    }
     openDialog(r.value);
     return false;
   } catch (e) { halt(e && e.stage ? e.stage : "update", e); return false; }
@@ -288,13 +296,18 @@ function loop(now) {
   while (acc >= STEP) {
     acc -= STEP;
     if (dialog) { dialogInput(); continue; }
-    if (!vm || halted || task) continue;
+    if (!vm || halted) continue;
+    if (task) {                        // a handler that went over budget
+      syncCartPointer();
+      if (drive()) ran = true; else { acc = 0; break; }
+      continue;
+    }
     syncCartPointer();
     task = vm.frameTask(frameNo, cartInput());
     frameNo++;
-    if (drive()) ran = true; else break;
+    if (drive()) ran = true; else { if (task && !dialog) acc = 0; break; }
   }
-  if (ran && !halted && !dialog) flush();
+  if ((ran || task) && !halted && !dialog) flush();
   requestAnimationFrame(loop);
 }
 

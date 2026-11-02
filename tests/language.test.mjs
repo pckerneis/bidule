@@ -99,14 +99,13 @@ test("language self-check cart passes", () => {
 const errorCases = [
   ["typo suggestion", "var score = 0\nupdate() {\n  scroe += 1\n}", 3, /did you mean 'score'/],
   ["fix into int", "var a = 0\nupdate() {\n  a = 1.5\n}", 3, /int\(x\) or round\(x\)/],
-  ["out of bounds", "var a[4]\nupdate(f) {\n  a[f + 4] = 1\n}", 3, /out of bounds for 'a' \(size 4\)/],
+  ["out of bounds", "var a[4]\nupdate(f) {\n  a[f + 4] = 1\n}", 3, /out of bounds \(a\[4\], size 4\)/],
   ["division by zero", "update() {\n  var z = 0\n  var q = 4 / z\n}", 3, /division by zero/],
   ["parse error", "update() {\n  if (x > 1 {\n  }\n}", 2, /expected '\)'/],
   ["read-only table", "const T[] = {1,2}\ninit() {\n  T[0] = 5\n}", 3, /read-only/],
   ["call depth", "fn f(n) {\n  return f(n + 1)\n}\ninit() {\n  f(0)\n}", 2, /call depth/],
-  ["endless loop", "update() {\n  while (1) {\n  }\n}", 2, /endless loop/],
-  ["no shadowing", "var x = 1\nfn f() {\n  var x = 2\n}\ninit() {\n  f()\n}", 3, /locals can't reuse names/],
-  ["fn without 'fn'", "foo() {\n}", 1, /start with 'fn'/],
+  ["no shadowing", "var x = 1\nfn f() {\n  var x = 2\n}\ninit() {\n  f()\n}", 3, /locals can't reuse its name/],
+  ["fn without 'fn'", "foo() {\n}", 1, /declare it with 'fn foo/],
 ];
 for (const [name, src, line, re] of errorCases) {
   test(`error: ${name}`, () => {

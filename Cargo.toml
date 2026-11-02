@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/bidule-bytecode", "crates/bidule-compiler", "crates/bidule-vm", "crates/bidule-runtime", "crates/bidule-cli"]
+members = ["crates/bidule-bytecode", "crates/bidule-compiler", "crates/bidule-vm", "crates/bidule-runtime", "crates/bidule-cli", "crates/bidule-web"]
 
 [workspace.package]
 version = "0.1.0"
@@ -10,3 +10,12 @@ repository = "https://github.com/pckerneis/bidule"
 
 [profile.release]
 opt-level = "s"
+
+# The browser build (scripts/build.mjs): the VM's speed matters more than a few KB.
+[profile.web]
+inherits = "release"
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

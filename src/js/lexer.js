@@ -1,7 +1,6 @@
 /* =====================================================================
    Lexer
    ===================================================================== */
-class BErr extends Error { constructor(msg, line) { super(msg); this.line = line || 0; } }
 const KEYWORDS = new Set("var const fn audio fix record sprite enum switch if else while for break continue return".split(" "));
 const OPS = ["<<=", ">>=", "&&", "||", "==", "!=", "<=", ">=", "<<", ">>", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "++", "--",
              "+", "-", "*", "/", "%", "&", "|", "^", "~", "!", "<", ">", "=", "?", ":", ";", ",", ".", "(", ")", "[", "]", "{", "}"];

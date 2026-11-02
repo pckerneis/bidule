@@ -134,23 +134,7 @@ pub fn describe_fault(vm: &Vm, f: &Fault) -> String {
         Some((l, c)) => write!(s, "line {}:{}: ", l, c).unwrap(),
         None => write!(s, "offset {}: ", f.pc).unwrap(),
     }
-    s.push_str(f.kind.message());
-    if let bidule_vm::FaultKind::OutOfBounds { array, index, size } = f.kind {
-        let name = if array < 0 {
-            String::from_utf8_lossy(p.array_name((array & 0xFF) as u16)).into_owned()
-        } else {
-            match bidule_bytecode::handle::Handle::decode(array) {
-                Some(h) if h.kind == bidule_bytecode::handle::Kind::Pool => String::from_utf8_lossy(p.array_name(h.id)).into_owned(),
-                Some(_) => String::from("constant table"),
-                None => String::new(),
-            }
-        };
-        if name.is_empty() {
-            write!(s, " (index {}, size {})", index, size).unwrap();
-        } else {
-            write!(s, " ({}[{}], size {})", name, index, size).unwrap();
-        }
-    }
+    vm.write_fault(&mut s, f).unwrap();
     let mut tr = [(0u16, 0u32); limits::CALL_DEPTH];
     let n = vm.trace(&mut tr);
     for &(func, pc) in &tr[..n] {
