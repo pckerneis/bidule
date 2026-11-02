@@ -186,3 +186,33 @@ test("full screen mode switch: buttons hidden and the screen is the pointer in m
   assert.ok(!$("fs").classList.contains("fs-mouse"));
   assert.deepEqual(errors, []);
 });
+
+test("full screen Reset takes a press and hold", { skip: SKIP_JSDOM }, async () => {
+  const { w, $, errors } = boot();
+  await wait(100);
+  $("fsBtn").click();
+  let resets = 0, was = false;
+  const poll = setInterval(() => { const on = $("resetBtn").classList.contains("down-state"); if (on && !was) resets++; was = on; }, 10);
+  const btn = $("fsReset");
+  assert.equal(btn.textContent, "Reset");
+
+  finger(w, btn, "pointerdown", 1, 0, 0); await wait(60);
+  finger(w, btn, "pointerup", 1, 0, 0); await wait(100);
+  assert.equal(btn.textContent, "Hold…", "a plain tap only asks for a hold");
+  assert.equal(resets, 0);
+
+  finger(w, btn, "pointerdown", 2, 0, 0); await wait(450);
+  assert.equal(btn.textContent, "Hold…");
+  assert.ok(parseFloat(btn.style.getPropertyValue("--p")) > 0, "the button fills while held");
+  finger(w, btn, "pointerup", 2, 0, 0); await wait(150);
+  assert.equal(resets, 0, "letting go early cancels");
+  assert.equal(btn.textContent, "Reset");
+
+  finger(w, btn, "pointerdown", 3, 0, 0); await wait(1300);
+  assert.equal(resets, 1, "holding to the end resets once");
+  assert.equal(btn.textContent, "Reset");
+  finger(w, btn, "pointerup", 3, 0, 0); await wait(100);
+  assert.equal(resets, 1);
+  clearInterval(poll);
+  assert.deepEqual(errors, []);
+});

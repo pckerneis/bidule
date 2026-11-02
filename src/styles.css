@@ -156,6 +156,9 @@ html.fs-on, html.fs-on body { overflow: hidden; overscroll-behavior: none; }
   background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.25); color: rgba(255,255,255,.7);
 }
 .fs-sys:active { background: rgba(255,255,255,.28); }
+/* Reset: quieter than the rest, and it fills while held (see host.js) */
+#fsReset { --p: 0%; color: rgba(255,255,255,.45); border-color: rgba(255,255,255,.15); background: linear-gradient(to right, rgba(242,181,68,.55) var(--p), rgba(255,255,255,.06) var(--p)); }
+#fsReset:active { background: linear-gradient(to right, rgba(242,181,68,.55) var(--p), rgba(255,255,255,.06) var(--p)); }
 .fs-rotate { display: none; margin: 0; }
 @media (orientation: portrait) {
   .fs { flex-direction: column; }
