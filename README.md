@@ -15,7 +15,7 @@ npm run build                               # writes dist/index.html
 
 Open `dist/index.html` in a browser. There is nothing to install for the page itself: everything, WebAssembly included, is inlined in one file.
 
-Keys: arrows or WASD for the D-pad, X/K for A, Z/J for B, R to reset, M for sound, F for full screen. The mouse works on the screen as the optional pointer.
+Keys: arrows or WASD for the D-pad, X/K for A, Z/J for B, Enter or P for Start (the system menu), R to reset, M for sound, F for full screen. The mouse works on the screen as the optional pointer.
 
 On a phone or tablet, **Full screen** shows the screen in landscape with the D-pad and A/B drawn over it as a semi-transparent overlay: multi-touch, and sliding a finger from one button to another switches buttons. The **⇄** control, in the strip of system controls beside the screen (Reset, ⇄, ✕; Reset needs a press and hold, since it loses the cart's state), switches to mouse mode: the buttons go away and a finger on the screen is the pointer (the editors use it); in button mode touches on the screen are ignored. The strip never covers the screen, so in mouse mode nothing is drawn on it. Where the browser allows it, the page also locks landscape and keeps the screen awake. iPhone Safari has no full-screen API for pages, so there the overlay fills the browser window instead.
 
@@ -66,11 +66,12 @@ Tests cover the language end to end, the format, hostile carts (mutated images a
 | `editing.js` | The shelf's side of the editing API: handles on picked carts' asset sections |
 | `wasm.js` | Runs a cart on the WebAssembly console: compile, load, resumable tasks, assets in their on-disk layout |
 | `host.js` | Shelf, main loop, system dialogs, input, code editor |
+| `sysmenu.js` | The system menu on Start (Resume, Restart, Volume, Carts, Project, Edit log, Quit), cart switching with a stack, the shelf screen, the write journal |
 | `lexer.js`, `parser.js`, `values.js`, `interpreter.js` | Not in the page: the earlier source interpreter, kept as the reference for conformance tests |
 
 ## Default apps
 
-- **Sprite Editor** (`carts/sprite-editor.bdcart`): edits the tile sheet of any cart on the shelf through the editing API. Tap B to move between panels; mouse works everywhere.
+- **Sprite Editor** (`carts/sprite-editor.bdcart`): edits the tile sheet of any cart on the shelf through the editing API, canvas first. Three panels: tools on the left (pen, eraser, fill, pick, line, rect, select, move, hand, zoom, undo, name, open, save), the sheet in the middle at five zoom levels (the first is a tile overview), colours on the right. B moves between panels, the arrows move inside the focused one, A acts; the mouse works everywhere. It opens the current project (the cart last picked) and asks the system for write access. Limits: pixel tools work on the tiles under the view (at most 5×4), undo covers the last action, selections are at most 16×16, and tile flags are not editable yet.
 - **Tile Peek**: a minimal editor kept as an editing-API example.
 - **Spark Catcher**, **Blink**: games using assets and the spec's example cart.
 
@@ -83,9 +84,10 @@ npm test
 
 ## Known gaps
 
-- The Rust compiler doesn't meet the spec's 128 KB working-RAM budget yet (about 700 KB for the Sprite Editor). It doesn't compile constant `Sound` records in source, music or byte strings: in the page these are load errors.
+- The Rust compiler doesn't meet the spec's 128 KB working-RAM budget yet (about 800 KB for the Sprite Editor). It doesn't compile constant `Sound` records in source, music or byte strings: in the page these are load errors.
 - `readasset` and `writeasset` move raw bytes, so they expect `int` arrays: a `fix` array doesn't get the converted values the reference interpreter gave.
 - A running cart sees its assets as they were when it loaded. If an editor saves into the running cart, the changes show after a reset.
+- Switching carts ends the running cart's editing session: the system asks before dropping unsaved edits, but nothing keeps them. The write journal has no undo yet.
 - Music assets and slot emptying are not implemented; carts can't be exported or imported as files yet.
 
 ## Credits

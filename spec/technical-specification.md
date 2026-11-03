@@ -279,7 +279,7 @@ update() {
 
 - There is one compiler implementation, written in Rust as a `no_std` crate (with `alloc`). It is built for desktop, the browser (WebAssembly), Linux handhelds and, later, the microcontroller. The VM is a separate `no_std` crate that the compiler does not depend on beyond the shared bytecode definition.
 - The compiler MUST compile any valid cart within 128 KB of working RAM, including on Creator-class devices that have more. Automated tests enforce this with maximum-size carts. Richer analysis (linting, formatting, extra diagnostics) may live in a separate host-only tool, but never changes the bytecode.
-- Status: not met yet. The first compiler keeps the whole syntax tree in memory and peaks around 700 KB on the Sprite Editor; a test records current levels against regressions until it compiles one function at a time.
+- Status: not met yet. The first compiler keeps the whole syntax tree in memory and peaks around 800 KB on the Sprite Editor; a test records current levels against regressions until it compiles one function at a time.
 - A new language feature is accepted only if it fits this budget; features needing unbounded whole-program analysis are rejected.
 
 **Asset section layout** — Decided. All multi-byte values are little-endian; sections are read in place from flash.
@@ -1025,5 +1025,5 @@ The hardware is the reference: a cartridge MUST behave the same on the emulator 
 - Music assets, emptying a slot, and exporting or importing carts are missing.
 - Constant `Sound` records and byte strings don't compile yet (see bytecode.md › Open).
 - A running cart keeps the assets it loaded with until it resets.
-- The system menu (Start) is missing, and `BTN_X` and `BTN_Y` are not defined yet.
+- The system menu is in the browser emulator (Start: Resume, Restart, Volume, Carts, Project, Edit log, Quit; cart switching with a stack), and `BTN_X` and `BTN_Y` read as released. Cart menu entries (`menuitem`, `menuchosen`) stay reserved. The write journal has no undo yet, a grant by `requestwrite` lasts until the asking cart closes, and an editing session does not survive a cart switch: the system asks before dropping unsaved edits.
 - `playing()` follows the frame count, and sound still comes from WebAudio nodes rather than a mixer shared with hardware.

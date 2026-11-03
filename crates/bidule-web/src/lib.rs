@@ -124,15 +124,15 @@ impl<S: Shelf> WebHost<S> {
 impl<S: Shelf> Host for WebHost<S> {
     fn call(&mut self, b: u8, a: &[i32], text: &[u8], mem: &mut Mem) -> Call {
         match b {
-            id::PICKCART | id::SAVECART => match self.ask(b, a, text, 0) {
+            id::PICKCART | id::SAVECART | id::REQUESTWRITE => match self.ask(b, a, text, 0) {
                 Answer::Value(_) => Call::Suspend,
                 Answer::Fault => Call::Fault(SHELF_FAULT),
             },
-            id::OPENSECTION | id::ASSETCOUNT | id::SETASSETNAME => match self.ask(b, a, text, 0) {
+            id::OPENSECTION | id::OPENCART | id::CARTCOUNT | id::ASSETCOUNT | id::SETASSETNAME => match self.ask(b, a, text, 0) {
                 Answer::Value(v) => Call::Value(v),
                 Answer::Fault => Call::Fault(SHELF_FAULT),
             },
-            id::CARTNAME => self.name_into(b, a, a[1], mem),
+            id::CARTNAME | id::CARTINFO => self.name_into(b, a, a[1], mem),
             id::ASSETNAME => self.name_into(b, a, a[2], mem),
             id::READASSET => self.read_asset(a, mem),
             id::WRITEASSET => self.write_asset(a, mem),

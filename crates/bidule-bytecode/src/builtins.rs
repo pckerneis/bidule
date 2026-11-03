@@ -47,6 +47,9 @@ pub struct Builtin {
     pub suspends: bool,
     /// Internal: not callable by name from source.
     pub internal: bool,
+    /// Reserved for a later version: the id is taken, the name is claimed, and the
+    /// verifier rejects any call to it.
+    pub reserved: bool,
 }
 
 impl Builtin {
@@ -59,16 +62,19 @@ use Arg::*;
 
 macro_rules! b {
     ($id:literal, $name:literal, [$($a:ident),*], $min:literal, $ret:ident) => {
-        Builtin { id: $id, name: $name, args: &[$($a),*], min_args: $min, ret: Ret::$ret, audio_ok: false, suspends: false, internal: false }
+        Builtin { id: $id, name: $name, args: &[$($a),*], min_args: $min, ret: Ret::$ret, audio_ok: false, suspends: false, internal: false, reserved: false }
     };
     ($id:literal, $name:literal, [$($a:ident),*], $min:literal, $ret:ident, audio) => {
-        Builtin { id: $id, name: $name, args: &[$($a),*], min_args: $min, ret: Ret::$ret, audio_ok: true, suspends: false, internal: false }
+        Builtin { id: $id, name: $name, args: &[$($a),*], min_args: $min, ret: Ret::$ret, audio_ok: true, suspends: false, internal: false, reserved: false }
     };
     ($id:literal, $name:literal, [$($a:ident),*], $min:literal, $ret:ident, suspends) => {
-        Builtin { id: $id, name: $name, args: &[$($a),*], min_args: $min, ret: Ret::$ret, audio_ok: false, suspends: true, internal: false }
+        Builtin { id: $id, name: $name, args: &[$($a),*], min_args: $min, ret: Ret::$ret, audio_ok: false, suspends: true, internal: false, reserved: false }
+    };
+    ($id:literal, $name:literal, [$($a:ident),*], $min:literal, $ret:ident, reserved) => {
+        Builtin { id: $id, name: $name, args: &[$($a),*], min_args: $min, ret: Ret::$ret, audio_ok: false, suspends: false, internal: false, reserved: true }
     };
     ($id:literal, $name:literal, [$($a:ident),*], $min:literal, $ret:ident, internal) => {
-        Builtin { id: $id, name: $name, args: &[$($a),*], min_args: $min, ret: Ret::$ret, audio_ok: false, suspends: false, internal: true }
+        Builtin { id: $id, name: $name, args: &[$($a),*], min_args: $min, ret: Ret::$ret, audio_ok: false, suspends: false, internal: true, reserved: false }
     };
 }
 
@@ -128,6 +134,12 @@ pub mod id {
     pub const SETASSETNAME: u8 = 51;
     pub const SAVECART: u8 = 52;
     pub const MAPCELL: u8 = 53;
+    pub const MENUITEM: u8 = 54;
+    pub const MENUCHOSEN: u8 = 55;
+    pub const CARTCOUNT: u8 = 56;
+    pub const CARTINFO: u8 = 57;
+    pub const OPENCART: u8 = 58;
+    pub const REQUESTWRITE: u8 = 59;
 }
 
 pub const BUILTINS: &[Builtin] = &[
@@ -186,6 +198,14 @@ pub const BUILTINS: &[Builtin] = &[
     b!(52, "savecart", [Int], 1, Int, suspends),
     // Maps.NAME[ty][tx]: map slot, cell x, cell y. Not callable by name.
     b!(53, "__mapcell", [Int, Int, Int], 3, Int, internal),
+    // Reserved: cart entries in the system menu (spec: System menu). Not callable yet.
+    b!(54, "menuitem", [Int, Text], 2, Int, reserved),
+    b!(55, "menuchosen", [], 0, Int, reserved),
+    // Other carts (spec: Editing API): reading is free, writing needs the user.
+    b!(56, "cartcount", [], 0, Int),
+    b!(57, "cartinfo", [Int, ArrW], 2, Int),
+    b!(58, "opencart", [Int, Text], 2, Int),
+    b!(59, "requestwrite", [Int], 1, Int, suspends),
 ];
 
 pub fn by_id(id: u8) -> Option<&'static Builtin> {
@@ -193,7 +213,12 @@ pub fn by_id(id: u8) -> Option<&'static Builtin> {
 }
 
 pub fn by_name(name: &str) -> Option<&'static Builtin> {
-    BUILTINS.iter().find(|b| !b.internal && b.name == name)
+    BUILTINS.iter().find(|b| !b.internal && !b.reserved && b.name == name)
+}
+
+/// True for a name the spec keeps for a later version (`menuitem`, `menuchosen`).
+pub fn is_reserved_name(name: &str) -> bool {
+    BUILTINS.iter().any(|b| b.reserved && b.name == name)
 }
 
 #[cfg(test)]
@@ -208,5 +233,7 @@ mod tests {
         assert_eq!(by_name("print").unwrap().id, id::PRINT);
         assert_eq!(by_id(id::MAPCELL).unwrap().name, "__mapcell");
         assert!(by_name("__mapcell").is_none());
+        assert!(by_name("menuitem").is_none() && is_reserved_name("menuitem"));
+        assert_eq!(by_name("requestwrite").unwrap().id, id::REQUESTWRITE);
     }
 }

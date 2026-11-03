@@ -23,7 +23,7 @@ export const CORE_MODULES = [
 // The source interpreter is no longer part of the page: it stays as the reference
 // the conformance tests compare the Rust console against.
 export const REFERENCE_MODULES = ["lexer.js", "parser.js", "values.js", "interpreter.js"];
-export const HOST_MODULES = ["host.js"];
+export const HOST_MODULES = ["host.js", "sysmenu.js"];
 
 // carts/<name>.bdcart → SAMPLE_SOURCES key used by samples.js
 const CART_KEYS = {

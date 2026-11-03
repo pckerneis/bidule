@@ -14,7 +14,7 @@ const rgba = w => { const [r, g, b] = rgbOf(w); return (255 << 24 | b << 16 | g 
 function flush() {
   for (let i = 0; i < 256; i++) lut[i] = rgba(pal565[i]);
   for (let i = 0; i < fb.length; i++) out32[i] = lut[fb[i]];
-  if (statusLine && !dialog && !halted) {
+  if (statusLine && !dialog && !halted && !sysmenu) {
     const bg = rgba(PAL_DEFAULT[0]), fg = rgba(PAL_DEFAULT[6]);
     out32.fill(bg, STATUS_Y * W, H * W);
     let x = 3;
@@ -29,7 +29,7 @@ function flush() {
   ctx.putImageData(img, 0, 0);
 }
 
-const SHELF_KEY = "bidule01.shelf.v1", OLD_KEY = "bidule01.cart.v2", MODE_KEY = "bidule01.mode";
+const VOL_KEY = "bidule01.volume", SHELF_KEY = "bidule01.shelf.v1", OLD_KEY = "bidule01.cart.v2", MODE_KEY = "bidule01.mode";
 const store = { get(k) { try { return localStorage.getItem(k); } catch (_) { return null; } }, set(k, v) { try { localStorage.setItem(k, v); return true; } catch (_) { return false; } } };
 
 /* ---------- shelf ---------- */
@@ -47,7 +47,7 @@ function loadShelf() {
   if (raw) {
     try {
       const p = JSON.parse(raw);
-      shelf = { current: p.current, seen: p.seen || ["spark", "peek", "blink"], carts: p.carts.map(c => ({ id: c.id, sampleId: c.sampleId || null, source: c.source, sections: unpackSections(c.sections) })) };
+      shelf = { current: p.current, project: p.project || null, journal: Array.isArray(p.journal) ? p.journal.slice(-JOURNAL_MAX) : [], seen: p.seen || ["spark", "peek", "blink"], carts: p.carts.map(c => ({ id: c.id, sampleId: c.sampleId || null, source: c.source, sections: unpackSections(c.sections) })) };
       for (const id of SAMPLE_IDS) if (!shelf.seen.includes(id)) { shelf.carts.unshift(makeSampleCart(id)); shelf.seen.push(id); }
       p.carts.forEach((pc, k) => {
         const c = shelf.carts.find(x => x.id === pc.id); if (!c || !c.sampleId) return;
@@ -60,7 +60,7 @@ function loadShelf() {
       if (shelf.carts.length) return;
     } catch (_) { /* rebuild below */ }
   }
-  shelf = { current: "sample-spark", seen: SAMPLE_IDS.slice(), carts: SAMPLE_IDS.map(makeSampleCart) };
+  shelf = { current: "sample-spark", project: null, journal: [], seen: SAMPLE_IDS.slice(), carts: SAMPLE_IDS.map(makeSampleCart) };
   const old = store.get(OLD_KEY);
   if (old && !/@id\s+(spark-catcher|blink-v2)\b/.test(old)) {
     const c = { id: newId(), sampleId: null, source: old, sections: emptySections() };
@@ -71,7 +71,7 @@ let persistTimer = 0;
 function persistShelf(now) {
   clearTimeout(persistTimer);
   const doIt = () => {
-    const data = JSON.stringify({ current: shelf.current, seen: shelf.seen, carts: shelf.carts.map(c => ({ id: c.id, sampleId: c.sampleId, pristine: c.pristine, source: c.source, sections: packSections(c.sections) })) });
+    const data = JSON.stringify({ current: shelf.current, project: shelf.project, journal: shelf.journal, seen: shelf.seen, carts: shelf.carts.map(c => ({ id: c.id, sampleId: c.sampleId, pristine: c.pristine, source: c.source, sections: packSections(c.sections) })) });
     if (!store.set(SHELF_KEY, data)) shelfNote("Couldn't save the shelf in this browser; changes last until you close the page.");
   };
   if (now) doIt(); else persistTimer = setTimeout(doIt, 500);
@@ -82,6 +82,10 @@ let vm = null, halted = null, frameNo = 0, debugMode = store.get(MODE_KEY) !== "
 let task = null;            // a paused or running cart task (generator)
 let late = false;           // the running cart has gone over its frame budget
 let dialog = null;          // the open system dialog, if any
+let sysmenu = null;         // the open system menu, or the shelf screen when no cart runs (sysmenu.js)
+let home = false;           // no cart is running: the console shows its cart shelf
+const launchStack = [];     // carts that switched to the running one; Quit goes back to the last
+const JOURNAL_MAX = 20;
 const pointer = { x: 0, y: 0, b: 0 };       // the real mouse
 const cartPointer = { x: 0, y: 0, b: 0 };   // what carts see
 // Buttons and mouse held when a system dialog closes belong to the dialog:
@@ -153,6 +157,7 @@ function halt(stage, e) {
 function load() {
   const cart = currentCart();
   stopAllVoices(); closeDialog(null, true);
+  sysmenu = null; home = false; pauseAudio(false);
   halted = null; vm = null; task = null; frameNo = 0; late = false;
   bbSample = 0; bbLastT = -1; bbVal = 128;
   transparent = 0; resetPalette(); fb.fill(0); statusLine = "";
@@ -166,6 +171,10 @@ function load() {
       sections: () => currentCart().sections,
       cartSections: id => findCart(id).sections,
       cartTitle: id => { const c = findCart(id); return c ? cartTitle(c) : ""; },
+      cartIds: () => shelf.carts.map(c => c.id),
+      projectId: () => (findCart(shelf.project) ? shelf.project : null),
+      setProject: id => { if (shelf.project !== id) { shelf.project = id; persistShelf(); } },
+      runningTitle: () => cartTitle(currentCart()),
       setStatusLine: t => { statusLine = t.slice(0, 39); },
       audioFault: e => setStatus(`audio(t) fault${e.line ? `, line ${e.line}` : ""}: ${e.message} (audio is silent until the next reset)`, true, e.line)
     });
@@ -187,6 +196,7 @@ function drive(answer) {
       if (debugMode && !late) { late = true; setStatus(`${r.value.stage}() is taking more than one frame.`, false); }
       return false;
     }
+    if (r.value.type === "noop") return drive(r.value.finish(null));    // nothing to ask the user
     openDialog(r.value);
     return false;
   } catch (e) { halt(e && e.stage ? e.stage : "update", e); return false; }
@@ -201,6 +211,11 @@ function openDialog(req) {
     dialog = { req, title: `CHOOSE A CART · ${req.kind.toUpperCase()}`, sel: 0, top: 0,
       items: shelf.carts.map(c => ({ label: cartTitle(c), value: c.id, note: `r${(c.sections[ASSET_KINDS[req.kind]] || { rev: 0 }).rev}` })),
       cancel: null, foot: "A choose   B cancel" };
+  } else if (req.type === "write") {
+    dialog = { req, title: "WRITE ACCESS REQUEST", sel: 1, top: 0,
+      info: [req.asker.toUpperCase().slice(0, 34), "WANTS TO MODIFY", req.target.toUpperCase().slice(0, 34)],
+      items: [{ label: "Allow", value: true }, { label: "Refuse", value: false }],
+      cancel: null, foot: "A choose   B refuse" };
   } else {
     const c = findCart(req.handle.pick.cartId);
     const t = c ? cartTitle(c) : "cart";
@@ -209,7 +224,7 @@ function openDialog(req) {
       items: [{ label: `Overwrite ${t}`, value: "over" }, { label: "Save as a copy", value: "copy" }, { label: "Cancel", value: null }],
       cancel: null, foot: "A choose   B cancel" };
   }
-  renderDialog();
+  renderList(dialog);
 }
 function closeDialog(answer, silent) {
   if (!dialog) return;
@@ -225,6 +240,7 @@ function finishDialog(value) {
   const req = dialog.req;
   let answer = value;
   if (req.type === "save") answer = value ? applySave(req, value) : 0;
+  else if (req.type === "write") answer = value === true;
   closeDialog(answer);
 }
 function applySave(req, mode) {
@@ -247,30 +263,42 @@ function applySave(req, mode) {
     cart.sections[Hd.secName] = sec;
     done.set(Hd.secName, sec.rev);
   }
+  shelf.project = cart.id;
+  shelf.journal.push({ at: Date.now(), who: req.asker || cartTitle(currentCart()), target: cartTitle(cart), sections: [...done.keys()].join("+"), rev: Math.max(...done.values()) });
+  if (shelf.journal.length > JOURNAL_MAX) shelf.journal.shift();
   persistShelf(true); renderShelf();
   shelfNote(`Saved ${[...done.keys()].join(" and ")} to “${cartTitle(cart)}”.`);
   return 1;
 }
 const ROW_H = 12, LIST_Y = 36, VISIBLE = 8;
-function renderDialog() {
-  const d = dialog;
+// One list screen for every system dialog and for the system menu: title bar, optional
+// info lines, rows with an optional note or custom drawing, and a footer of button hints.
+function renderList(d) {
   fillRect(10, 10, 220, 140, 0); strokeRect(10, 10, 220, 140, 6);
   fillRect(10, 10, 220, 14, 1);
   drawText(d.title.slice(0, 35), 16, 13, 10);
+  let y0 = LIST_Y;
+  for (const line of d.info || []) { drawText(line, 16, y0 - 2, 6); y0 += 10; }
+  if (d.info) y0 += 4;
+  d.y0 = y0;
+  const rows = Math.min(VISIBLE, Math.floor((132 - y0 + 10) / ROW_H));
+  d.rows = rows;
   if (d.sel < d.top) d.top = d.sel;
-  if (d.sel >= d.top + VISIBLE) d.top = d.sel - VISIBLE + 1;
-  for (let k = 0; k < VISIBLE; k++) {
+  if (d.sel >= d.top + rows) d.top = d.sel - rows + 1;
+  for (let k = 0; k < rows; k++) {
     const i = d.top + k, it = d.items[i]; if (!it) break;
-    const y = LIST_Y + k * ROW_H;
+    const y = y0 + k * ROW_H;
     if (i === d.sel) fillRect(14, y - 2, 212, ROW_H, 12);
     drawText(it.label.slice(0, 28), 20, y, i === d.sel ? 7 : 6);
-    if (it.note) drawText(it.note, 222 - textWidth(it.note), y, i === d.sel ? 7 : 5);
+    if (it.draw) it.draw(y, i === d.sel);
+    else if (it.note) drawText(it.note, 222 - textWidth(it.note), y, i === d.sel ? 7 : 5);
   }
-  if (!d.items.length) drawText("No carts on the shelf", 20, LIST_Y, 6);
-  if (d.items.length > VISIBLE) drawText(`${d.sel + 1}/${d.items.length}`, 180, 136, 5);
+  if (!d.items.length) drawText(d.empty || "No carts on the shelf", 20, y0, 6);
+  if (d.items.length > rows) drawText(`${d.sel + 1}/${d.items.length}`, 180, 136, 5);
   drawText(d.foot, 16, 136, 6);
   flush();
 }
+const renderDialog = () => renderList(dialog);
 function dialogInput() {
   const inp = currentInput(), p = inp & ~dlgPrev; dlgPrev = inp;
   const d = dialog;
@@ -282,8 +310,8 @@ function dialogInput() {
 }
 function dialogClick(x, y) {
   const d = dialog;
-  const k = Math.floor((y - LIST_Y + 2) / ROW_H);
-  if (x >= 14 && x < 226 && k >= 0 && k < VISIBLE && d.items[d.top + k]) { d.sel = d.top + k; finishDialog(d.items[d.sel].value); }
+  const k = Math.floor((y - (d.y0 || LIST_Y) + 2) / ROW_H);
+  if (x >= 14 && x < 226 && k >= 0 && k < (d.rows || VISIBLE) && d.items[d.top + k]) { d.sel = d.top + k; finishDialog(d.items[d.sel].value); }
 }
 
 /* ---------- main loop: fixed 60 Hz ---------- */
@@ -296,6 +324,7 @@ function loop(now) {
   while (acc >= STEP) {
     acc -= STEP;
     if (dialog) { dialogInput(); continue; }
+    if (sysmenu) { sysmenuInput(); continue; }
     if (!vm || halted) continue;
     if (task) {                        // a handler that went over budget
       syncCartPointer();
@@ -339,6 +368,7 @@ const isTyping = el => el && (el.tagName === "TEXTAREA" || el.tagName === "INPUT
 window.addEventListener("keydown", e => {
   if (isTyping(document.activeElement) || e.ctrlKey || e.metaKey || e.altKey) return;
   ensureAudio();
+  if (e.code === "KeyP" || (e.code === "Enter" && (!document.activeElement || document.activeElement === document.body))) { e.preventDefault(); if (!e.repeat) pressStart(); return; }
   if (e.code === "KeyR") { e.preventDefault(); if (!e.repeat) pressReset(); return; }
   if (e.code === "KeyM") { e.preventDefault(); if (!e.repeat) toggleSound(); return; }
   if (e.code === "KeyF") { e.preventDefault(); if (!e.repeat) toggleFs(); return; }
@@ -379,6 +409,7 @@ canvas.addEventListener("pointerdown", ev => {
   try { canvas.setPointerCapture(ev.pointerId); } catch (_) {}
   [pointer.x, pointer.y] = screenXY(ev); pointer.b = BTN_BITS(ev) || 1;
   if (dialog) dialogClick(pointer.x, pointer.y);
+  else if (sysmenu) sysmenuClick(pointer.x, pointer.y);
   ev.preventDefault();
 });
 canvas.addEventListener("pointerup", ev => { [pointer.x, pointer.y] = screenXY(ev); pointer.b = BTN_BITS(ev); });
@@ -386,6 +417,9 @@ canvas.addEventListener("pointercancel", () => { pointer.b = 0; });
 canvas.addEventListener("contextmenu", ev => ev.preventDefault());
 canvas.style.touchAction = "none";
 
+const menuEl = document.getElementById("menuBtn");
+menuEl.addEventListener("click", () => { ensureAudio(); pressStart(); });
+document.getElementById("fsMenu").addEventListener("click", () => { ensureAudio(); pressStart(); });
 const resetEl = document.getElementById("resetBtn");
 function pressReset() { resetEl.classList.add("down-state"); setTimeout(() => resetEl.classList.remove("down-state"), 120); load(); }
 resetEl.addEventListener("click", pressReset);
@@ -532,7 +566,7 @@ try { new ResizeObserver(() => { if (fsActive) fitFs(); }).observe(fsStage); } c
 const soundBtn = document.getElementById("soundBtn");
 function toggleSound() {
   muted = !muted;
-  if (master) master.gain.value = muted ? 0 : 1;
+  applyGain();
   soundBtn.setAttribute("aria-pressed", String(!muted));
   soundBtn.textContent = muted ? "Sound off" : "Sound on";
 }
@@ -550,7 +584,8 @@ function renderShelf() {
   restoreBtn.hidden = !cur.sampleId;
   armDelete(false); armRestore(false);
 }
-function switchCart(id) {
+function switchCart(id, keepStack) {
+  if (!keepStack) launchStack.length = 0;
   shelf.current = id; persistShelf();
   const c = currentCart();
   code.value = c.source; renderGutter();
@@ -639,6 +674,7 @@ PAL_DEFAULT.forEach((w, i) => {
   palEl.appendChild(s);
 });
 
+{ const v = parseInt(store.get(VOL_KEY), 10); if (v >= 0 && v <= 10) { volume = v; applyGain(); } }
 loadShelf();
 code.value = currentCart().source;
 renderShelf();

@@ -31,6 +31,7 @@
         </div>
       </div>
       <div class="sys">
+        <button class="tool" id="menuBtn" title="Start (Enter or P)">Menu</button>
         <button class="tool" id="resetBtn">Reset</button>
       </div>
     </div>
@@ -49,6 +50,7 @@
         <dt><kbd>←↑↓→</kbd> <kbd>WASD</kbd></dt><dd>D-pad · BTN_LEFT… BTN_DOWN</dd>
         <dt><kbd>X</kbd> <kbd>K</kbd></dt><dd>A · BTN_A</dd>
         <dt><kbd>Z</kbd> <kbd>J</kbd></dt><dd>B · BTN_B</dd>
+        <dt><kbd>Enter</kbd> <kbd>P</kbd></dt><dd>Start · system menu (Resume, Restart, Volume, Carts, Quit)</dd>
         <dt><kbd>R</kbd></dt><dd>Reset the cartridge</dd>
         <dt><kbd>M</kbd></dt><dd>Sound on or off</dd>
         <dt><kbd>F</kbd></dt><dd>Full screen</dd>
@@ -144,6 +146,8 @@
             <div><code>savecart(h)</code> saves every section of the pick; 1 if saved</div>
             <div><code>opensection(h, kind)</code> another section of the picked cart <span class="prov">PROPOSED</span></div>
             <div><code>cartname(h, dst)</code> · <code>drawasset(h, i, x, y)</code> <span class="prov">PROPOSED</span></div>
+            <div><code>cartcount()</code> · <code>cartinfo(c, dst)</code> · <code>opencart(c, kind)</code> read-only handle, <code>c</code> = −1 is the current project <span class="prov">PROPOSED</span></div>
+            <div><code>requestwrite(h)</code> asks the user to let this cart modify the other one; 1 if allowed <span class="prov">PROPOSED</span></div>
             <div><code>status(text)</code> system hint line at the bottom <span class="prov">PROPOSED</span></div>
             <div>Tiles slot: 64 pixel bytes + 1 flag byte <span class="prov">PROPOSED</span></div>
           </div>
@@ -161,6 +165,7 @@
   <div class="fs-stage" id="fsStage"></div>
   <p class="fs-rotate">Rotate your device for landscape</p>
   <div class="fs-top">
+    <button class="fs-sys" id="fsMenu" type="button">Menu</button>
     <button class="fs-sys" id="fsReset" type="button">Reset</button>
     <button class="fs-sys" id="fsMode" type="button">⇄ Buttons</button>
     <button class="fs-sys" id="fsExit" type="button" aria-label="Exit full screen">✕</button>

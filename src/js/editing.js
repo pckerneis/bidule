@@ -48,6 +48,7 @@ function makeEditing(host, err) {
   // vals: one byte per array element
   function writeSlot(H_, vals, i, line) {
     const need = n => { if (vals.length < n) err(line, `writeasset needs ${n} values for this ${H_.kind} slot; the array holds ${vals.length}`); return Uint8Array.from(vals.slice(0, n)); };
+    if (!H_.pick.writable) return -1;          // read-only until the user allows it
     const n = slotCount(H_), s = H_.sec;
     const fixed = H_.kind === "tiles" || H_.kind === "palette";
     if (i < 0 || i > n || (fixed && i === n)) err(line, `slot ${i} can't be written; this ${H_.kind} section has ${n} slots${fixed ? "" : " (use " + n + " to append)"}`);
@@ -75,15 +76,34 @@ function makeEditing(host, err) {
     H_.dirty = true;
     return 1;
   }
-  // pickcart: the system dialog's request; finish(cartId) gives the handle or -1
+  // pickcart: the system dialog's request; finish(cartId) gives the handle or -1.
+  // Choosing the cart is the user's authorization to modify it (spec: Editing API).
   function pickFinish(kind, line) {
     const secName = sectionOf(kind, line);
     return new SysReq({ type: "pick", kind, finish: cartId => {
       if (cartId == null) return -1;
-      const pick = { cartId };          // shared by every handle opened from this pick
+      host.setProject(cartId);
+      const pick = { cartId, writable: true };   // shared by every handle opened from this pick
       const sec = cloneSection(secName, host.cartSections(cartId)[secName]);
       handles.push({ pick, kind, secName, sec, dirty: false });
       return handles.length - 1;
+    } });
+  }
+  // opencart: another cart's asset section, read-only, no dialog. c = -1 is the current project.
+  function openCart(c, kind, line) {
+    const secName = sectionOf(kind, line);
+    const ids = host.cartIds();
+    const cartId = c === -1 ? host.projectId() : ids[c];
+    if (cartId == null || !ids.includes(cartId)) return -1;
+    handles.push({ pick: { cartId, writable: false }, kind, secName, sec: cloneSection(secName, host.cartSections(cartId)[secName]), dirty: false });
+    return handles.length - 1;
+  }
+  // requestwrite: the system asks the user to let this cart modify the cart behind h
+  function requestWrite(H_) {
+    if (H_.pick.writable) return new SysReq({ type: "noop", finish: () => 1 });
+    return new SysReq({ type: "write", asker: host.runningTitle(), target: host.cartTitle(H_.pick.cartId), finish: ok => {
+      if (ok) { H_.pick.writable = true; host.setProject(H_.pick.cartId); }
+      return ok ? 1 : 0;
     } });
   }
   function openSection(h, kind, line) {
@@ -103,6 +123,7 @@ function makeEditing(host, err) {
     if (i < 0 || i >= slotCount(H_)) err(line, `slot ${i} doesn't exist`);
     if (name && !/^[A-Za-z_][A-Za-z0-9_]{0,23}$/.test(name)) err(line, `"${name}" is not a valid asset name (letters, digits and _, at most 24 characters)`);
     if (name && H_.sec.slots.some((s, k) => k !== i && s.name === name)) err(line, `another asset is already named ${name}`);
+    if (!H_.pick.writable) return -1;
     H_.sec.slots[i].name = name; H_.dirty = true; return 1;
   }
   // drawasset: the first tile and size in tiles of slot i
@@ -118,7 +139,8 @@ function makeEditing(host, err) {
   }
   // savecart: one confirmation saves every section opened through this pick
   function saveGroup(H_) {
-    return new SysReq({ type: "save", handle: H_, handles: handles.filter(x => x.pick === H_.pick), finish: r => r ? 1 : 0 });
+    if (!H_.pick.writable) return new SysReq({ type: "noop", finish: () => 0 });
+    return new SysReq({ type: "save", handle: H_, asker: host.runningTitle(), handles: handles.filter(x => x.pick === H_.pick), finish: r => r ? 1 : 0 });
   }
-  return { handles, slotOf, slotCount, slotBytes, writeSlot, pickFinish, openSection, nameOf, setName, drawInfo, saveGroup };
+  return { handles, slotOf, slotCount, slotBytes, writeSlot, pickFinish, openCart, requestWrite, openSection, nameOf, setName, drawInfo, saveGroup };
 }

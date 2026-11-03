@@ -53,7 +53,7 @@ function makeVM(src, host) {
     }
   }
   function textArg(v, line) { if (v instanceof TextV) return v.s; if (v instanceof Arr || v instanceof Row) return arrText(v); err(line, "expected text"); }
-  const { handles, slotCount, slotBytes, slotOf, writeSlot, pickFinish, openSection, nameOf, setName, drawInfo, saveGroup } = makeEditing(host, err);
+  const { handles, slotCount, slotBytes, slotOf, writeSlot, pickFinish, openCart, requestWrite, openSection, nameOf, setName, drawInfo, saveGroup } = makeEditing(host, err);
   function hget(v, line) { return slotOf(ti(v, line), line); }
   const B = (arity, fn, audioOnly) => ({ arity, fn, audioOnly });
   const BUILTINS_IMPL = {
@@ -169,6 +169,15 @@ function makeVM(src, host) {
     pickcart: B([1, 1], (a, l) => pickFinish(textArg(a[0], l), l)),
     // Proposed (spec › Editor support): another asset section of an already-picked cart
     opensection: B([2, 2], (a, l) => openSection(ti(a[0], l), textArg(a[1], l), l)),
+    // Proposed (spec › Editing API): other carts, read-only until the user allows writing
+    cartcount: B([0, 0], () => host.cartIds().length),
+    cartinfo: B([2, 2], (a, l) => {
+      const id = host.cartIds()[ti(a[0], l)];
+      if (id == null) err(l, `cart ${ti(a[0], l)} doesn't exist; cartcount() says how many there are`);
+      return BUILTINS_IMPL.fmt.fn([a[1], new TextV(host.cartTitle(id))], l);
+    }),
+    opencart: B([2, 2], (a, l) => openCart(ti(a[0], l), textArg(a[1], l), l)),
+    requestwrite: B([1, 1], (a, l) => requestWrite(hget(a[0], l))),
     cartname: B([2, 2], (a, l) => {
       return BUILTINS_IMPL.fmt.fn([a[1], new TextV(host.cartTitle(hget(a[0], l).pick.cartId))], l);
     }),

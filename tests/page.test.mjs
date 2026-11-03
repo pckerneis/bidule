@@ -10,7 +10,7 @@ const opened = [];
 after(() => opened.forEach(w => w.close()));
 const wait = ms => new Promise(r => setTimeout(r, ms));
 function boot(seed) {
-  const html = assemblePage().replace("loadShelf();\n", "window.__fb = fb; window.__ptr = pointer; loadShelf();\n");
+  const html = assemblePage().replace("loadShelf();\n", "window.__fb = fb; window.__ptr = pointer; window.__sm = () => sysmenu; loadShelf();\n");
   const dom = new JSDOM(html, { url: "https://bidule.test/", runScripts: "outside-only", pretendToBeVisual: true });
   const w = dom.window;
   if (seed) w.localStorage.setItem("bidule01.shelf.v1", JSON.stringify(seed));
@@ -39,13 +39,13 @@ test("a picker click is not seen by the cart until released", { skip: !JSDOM && 
   await wait(150);
   $("cartSel").value = "sample-sprites"; $("cartSel").dispatchEvent(new w.Event("change"));
   await wait(150);
-  const cell = () => w.__fb[(16 + 3) * 240 + (6 + 3)];
-  pe("pointerdown", 40, 50, 1);         // second picker row, over the canvas: Spark Catcher
-  pe("pointermove", 9, 19, 1); await wait(250);
+  const cell = () => w.__fb[(3 + 3) * 240 + (24 + 3)];        // the first pixel of the sheet, in the editor's view
+  pe("pointerdown", 40, 50, 1);         // second picker row, over the view: Spark Catcher
+  pe("pointermove", 27, 6, 1); await wait(250);
   assert.match($("shelfNote").textContent + $("statusText").textContent, /Sprite Editor/);
-  assert.equal(cell(), 0, "held click must not paint");
-  pe("pointerup", 9, 19, 0); await wait(80);
-  pe("pointerdown", 9, 19, 1); await wait(200); pe("pointerup", 9, 19, 0); await wait(80);
+  assert.notEqual(cell(), 7, "held click must not paint");
+  pe("pointerup", 27, 6, 0); await wait(80);
+  pe("pointerdown", 27, 6, 1); await wait(200); pe("pointerup", 27, 6, 0); await wait(80);
   assert.equal(cell(), 7, "a new click paints");
 });
 
@@ -215,4 +215,146 @@ test("full screen Reset takes a press and hold", { skip: SKIP_JSDOM }, async () 
   assert.equal(resets, 1);
   clearInterval(poll);
   assert.deepEqual(errors, []);
+});
+
+/* ---------- system menu (Start) and cart switching ---------- */
+const key = (w, code, type = "keydown") => w.dispatchEvent(new w.KeyboardEvent(type, { code, bubbles: true }));
+const pressKey = async (w, code, ms = 40) => { key(w, code); await wait(ms); key(w, code, "keyup"); await wait(ms); };
+// Where the menu is drawn: its title bar is colour 1 over the cart's own picture.
+const menuOpen = w => !!w.__sm() && w.__fb[11 * 240 + 12] === 1 && w.__fb[50 * 240 + 10] === 6;
+const menuPage = w => (w.__sm() ? w.__sm().page : null);
+const down = async (w, n) => { for (let i = 0; i < n; i++) await pressKey(w, "KeyS"); };
+
+test("Start opens the system menu and pauses the cart; Resume closes it", { skip: SKIP_JSDOM }, async () => {
+  const { w, $, errors } = boot();
+  await wait(150);
+  const before = $("statusText").textContent;
+  await pressKey(w, "KeyP", 60);
+  assert.ok(menuOpen(w), "the menu is drawn on the console screen");
+  const frozen = w.__fb.slice(30 * 240, 31 * 240).join();
+  await wait(200);
+  assert.equal(w.__fb.slice(30 * 240, 31 * 240).join(), frozen, "the cart does not run while the menu is open");
+  await pressKey(w, "KeyX");                       // A on Resume
+  assert.ok(!menuOpen(w));
+  assert.equal($("statusText").textContent, before);
+  await pressKey(w, "Enter");                      // Enter is Start too
+  assert.ok(menuOpen(w));
+  await pressKey(w, "KeyP");                       // Start again closes it
+  assert.ok(!menuOpen(w));
+  $("menuBtn").click();                            // and so does the Menu button
+  assert.ok(menuOpen(w));
+  $("menuBtn").click();
+  assert.ok(!menuOpen(w));
+  assert.deepEqual(errors, []);
+});
+
+test("buttons held when the menu closes read as released until let go", { skip: SKIP_JSDOM }, async () => {
+  const src = `// @title Pad\nvar n = 0\nupdate() {\n  if (btn(BTN_A)) { n++ }\n}\ndraw() {\n  cls(0)\n  print("{n}", 10, 80, 7)\n}`;
+  const { w, $ } = boot({ current: "c", seen: [], carts: [{ id: "c", sampleId: null, source: src, sections: null }] });
+  await wait(100);
+  const frameSum = () => w.__fb.slice(78 * 240, 90 * 240).reduce((a, b) => a + b, 0);
+  await pressKey(w, "KeyP", 40);
+  key(w, "KeyX"); await wait(60);                  // A chooses Resume and stays down
+  const atClose = frameSum(); await wait(150);
+  assert.equal(frameSum(), atClose, "the A that closed the menu never reaches the cart");
+  key(w, "KeyX", "keyup"); await wait(60);
+  key(w, "KeyX"); await wait(150);
+  assert.notEqual(frameSum(), atClose, "a new press does");
+  key(w, "KeyX", "keyup");
+});
+
+test("Carts switches to another cart, Quit goes back, Quit with nothing to go back to shows the shelf", { skip: SKIP_JSDOM }, async () => {
+  const { w, $, errors } = boot();
+  await wait(150);
+  assert.match($("statusText").textContent, /Spark Catcher/);
+  await pressKey(w, "KeyP");
+  await pressKey(w, "KeyS"); await pressKey(w, "KeyS"); await pressKey(w, "KeyS");   // Resume, Restart, Volume → Carts
+  await pressKey(w, "KeyX");                       // open the cart list; the running cart is selected
+  await pressKey(w, "KeyW");                       // up one: Sprite Editor (first on the shelf)
+  await pressKey(w, "KeyX");                       // switch
+  await wait(250);
+  assert.equal($("cartSel").value, "sample-sprites");
+  assert.match($("cartName").textContent, /Sprite Editor/);
+  await pressKey(w, "KeyZ"); await wait(100);      // the editor asks which cart to edit: B cancels
+  assert.equal(menuPage(w), null, "Start is ignored while the cart's own dialog is open, so cancel first");
+  await pressKey(w, "KeyP");                       // the menu again: Quit goes back to Spark Catcher
+  assert.equal(menuPage(w), "main");
+  await down(w, 6);
+  await pressKey(w, "KeyX");
+  await wait(250);
+  assert.equal($("cartSel").value, "sample-spark", "Quit returns to the cart that switched");
+  await pressKey(w, "KeyP");
+  await down(w, 6);
+  await pressKey(w, "KeyX");                       // nothing to go back to: the shelf screen
+  await wait(100);
+  assert.equal($("ledtxt").textContent, "STANDBY");
+  assert.match($("statusText").textContent, /No cartridge is running/);
+  await pressKey(w, "KeyX");                       // A runs the selected cart
+  await wait(200);
+  assert.equal($("ledtxt").textContent, "POWER");
+  assert.deepEqual(errors, []);
+});
+
+test("switching away from unsaved edits asks first", { skip: SKIP_JSDOM }, async () => {
+  const { w, $ } = boot();
+  await wait(100);
+  $("cartSel").value = "sample-sprites"; $("cartSel").dispatchEvent(new w.Event("change"));
+  await wait(150);
+  await pressKey(w, "KeyS"); await pressKey(w, "KeyX"); await wait(100);   // the editor's picker: Spark Catcher
+  await pressKey(w, "KeyX"); await wait(100);      // A: the pen paints a pixel, an unsaved edit
+  await pressKey(w, "KeyP");
+  await down(w, 6); await pressKey(w, "KeyX");     // Quit: nothing to go back to, but there are edits
+  assert.equal(menuPage(w), "confirm");
+  await pressKey(w, "KeyX");                       // the default answer is Stay
+  assert.equal(menuPage(w), "main");
+  assert.equal($("ledtxt").textContent, "POWER");
+  await down(w, 6); await pressKey(w, "KeyX");     // Quit again
+  assert.equal(menuPage(w), "confirm");
+  await pressKey(w, "KeyW"); await pressKey(w, "KeyX");   // Go on without saving
+  await wait(100);
+  assert.equal($("ledtxt").textContent, "STANDBY");
+});
+
+test("the menu's Volume row changes the volume and keeps it", { skip: SKIP_JSDOM }, async () => {
+  const { w, $ } = boot();
+  await wait(100);
+  await pressKey(w, "KeyP");
+  await down(w, 2);                                // Volume
+  await pressKey(w, "KeyA"); await pressKey(w, "KeyA");   // left twice: 10 → 8
+  assert.equal(w.localStorage.getItem("bidule01.volume"), "8");
+  await pressKey(w, "KeyD");
+  assert.equal(w.localStorage.getItem("bidule01.volume"), "9");
+});
+
+test("Project shows the cart last picked for editing and clears it", { skip: SKIP_JSDOM }, async () => {
+  const { w, $ } = boot();
+  await wait(100);
+  $("cartSel").value = "sample-sprites"; $("cartSel").dispatchEvent(new w.Event("change"));
+  await wait(150);
+  await pressKey(w, "KeyS"); await pressKey(w, "KeyX"); await wait(100);   // pick Spark Catcher
+  const shelf = () => JSON.parse(w.localStorage.getItem("bidule01.shelf.v1"));
+  await wait(700);
+  assert.equal(shelf().project, "sample-spark");
+  await pressKey(w, "KeyP"); await down(w, 4);      // Project: A clears it
+  await pressKey(w, "KeyX"); await wait(700);
+  assert.equal(shelf().project, null);
+});
+
+test("a save to another cart is written to the edit log", { skip: SKIP_JSDOM }, async () => {
+  const { w, $ } = boot();
+  await wait(100);
+  $("cartSel").value = "sample-sprites"; $("cartSel").dispatchEvent(new w.Event("change"));
+  await wait(150);
+  await pressKey(w, "KeyS"); await pressKey(w, "KeyX"); await wait(100);   // pick Spark Catcher
+  await pressKey(w, "KeyX"); await wait(100);                               // paint a pixel
+  await pressKey(w, "KeyZ"); await pressKey(w, "KeyZ");                     // B, B: the tools panel
+  await pressKey(w, "KeyW"); await pressKey(w, "KeyX"); await wait(100);   // up wraps to SAV; A
+  await pressKey(w, "KeyX"); await wait(150);                               // Overwrite
+  assert.match($("shelfNote").textContent, /Saved sprites to “Spark Catcher”/);
+  await pressKey(w, "KeyP"); await down(w, 5); await pressKey(w, "KeyX");  // Edit log
+  assert.equal(menuPage(w), "log");
+  assert.equal(w.__sm().d.items.length, 1);
+  assert.match(w.__sm().d.items[0].label, /^\d\d:\d\d Sprite Ed\.>Spark Catc\.$/);
+  const entry = JSON.parse(w.localStorage.getItem("bidule01.shelf.v1")).journal[0];
+  assert.deepEqual({ who: entry.who, target: entry.target, sections: entry.sections, rev: entry.rev }, { who: "Sprite Editor", target: "Spark Catcher", sections: "sprites", rev: 1 });
 });

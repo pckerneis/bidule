@@ -26,6 +26,8 @@ pub enum Dialog {
     PickCart,
     /// `savecart(h)`: answer 1 if saved, 0 if not.
     SaveCart { handle: i32 },
+    /// `requestwrite(h)`: answer 1 if the user lets the cart modify the other cart, 0 if not.
+    RequestWrite { handle: i32 },
 }
 
 const STATUS_MAX: usize = 40;
@@ -84,7 +86,8 @@ impl<'c> Console<'c> {
     /// Call once per frame before `update`, with the buttons held now.
     pub fn begin_frame(&mut self, input: u32) {
         self.prev_input = self.input;
-        self.input = input;
+        // Bits 6 and 7 (X and Y) are reserved and always read as released.
+        self.input = input & 0x3F;
     }
 
     /// The status line set with `status(text)`; the system draws it over the
@@ -353,7 +356,12 @@ impl<'c> Host for Console<'c> {
                 Call::Suspend
             }
             // The rest of the editing API needs the platform's cart shelf.
-            id::OPENSECTION => v(-1),
+            id::OPENSECTION | id::OPENCART => v(-1),
+            id::CARTCOUNT | id::CARTINFO => v(0),
+            id::REQUESTWRITE => {
+                self.dialog = Some(Dialog::RequestWrite { handle: a[0] });
+                Call::Suspend
+            }
             id::CARTNAME | id::ASSETCOUNT | id::ASSETNAME | id::READASSET | id::WRITEASSET | id::SETASSETNAME | id::DRAWASSET => v(0),
             _ => Call::Fault("unknown built-in"),
         }

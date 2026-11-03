@@ -23,7 +23,12 @@ export function makeHarness(core, runningId, extraCarts = [], engine = core.make
   const pointer = { x: 0, y: 0, b: 0 };
   let running = carts[runningId];
   const status = { text: "" };
+  const state = { project: null };
   const host = {
+    cartIds: () => Object.keys(carts),
+    projectId: () => (state.project in carts ? state.project : null),
+    setProject: id => { state.project = id; },
+    runningTitle: () => host.cartTitle(runningId),
     debug: true, pointer,
     sections: () => running.sections,
     cartSections: id => carts[id].sections,
@@ -38,6 +43,7 @@ export function makeHarness(core, runningId, extraCarts = [], engine = core.make
     let r = task.next();
     while (!r.done) {
       if (r.value.type === "late") { r = task.next(); continue; }
+      if (r.value.type === "noop") { r = task.next(r.value.finish(null)); continue; }
       asked.push(r.value.type);
       const a = answers.shift();
       if (r.value.type === "save") {
@@ -52,11 +58,12 @@ export function makeHarness(core, runningId, extraCarts = [], engine = core.make
           }
         }
         r = task.next(a ? 1 : 0);
-      } else r = task.next(a ?? null);
+      } else if (r.value.type === "write") r = task.next(a === true);
+      else r = task.next(a ?? null);
     }
   }
   return {
-    carts, pointer, vm: vmi, asked, status,
+    carts, pointer, vm: vmi, asked, status, state,
     init(answers = []) { drain(vmi.initTask(), answers); },
     frame(input = 0, answers = []) { drain(vmi.frameTask(frameNo++, input), answers); },
   };

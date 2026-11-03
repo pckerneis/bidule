@@ -53,6 +53,8 @@ pub const BUILTIN_CONSTS: &[(&str, i32)] = &[
     ("BTN_DOWN", 3),
     ("BTN_A", 4),
     ("BTN_B", 5),
+    ("BTN_X", 6),
+    ("BTN_Y", 7),
     ("SCREEN_W", 240),
     ("SCREEN_H", 160),
     ("BLACK", 0),
@@ -174,7 +176,7 @@ impl<'a> Compiler<'a> {
         if bidule_bytecode::builtins::by_name(n).is_some() || INTRINSICS.contains(&n) {
             return Err(Diag::error(name.pos, format!("'{}' is a built-in function; pick another name", n)));
         }
-        if ASSET_PREFIXES.contains(&n) || n == "Sound" {
+        if ASSET_PREFIXES.contains(&n) || n == "Sound" || bidule_bytecode::builtins::is_reserved_name(n) {
             return Err(Diag::error(name.pos, format!("'{}' is reserved; pick another name", n)));
         }
         if let Some(p) = self.sym_pos.get(n) {

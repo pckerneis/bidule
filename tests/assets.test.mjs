@@ -58,7 +58,7 @@ init() {
   }
 }`;
   const h = makeHarness(core, "t", [cart("t", "")]);
-  const c = core.makeWasmVM(src, { debug: true, pointer: h.pointer, sections: () => h.carts.t.sections, cartSections: id => h.carts[id].sections });
+  const c = core.makeWasmVM(src, { debug: true, pointer: h.pointer, sections: () => h.carts.t.sections, cartSections: id => h.carts[id].sections, setProject() {} });
   const task = c.initTask();
   let r = task.next(); assert.equal(r.value.type, "pick");
   r = task.next(null); assert.equal(r.value.type, "pick");
