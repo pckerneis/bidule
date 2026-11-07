@@ -6,6 +6,14 @@
 //! ```text
 //! .bdcart source ─ lexer ─ parser ─ declarations ─ code generation ─ .bdb image
 //! ```
+//!
+//! To stay small, the syntax tree is never in memory as a whole. The parser
+//! checks the source and keeps, for each top-level item, its kind, name and
+//! position ([`ast::ItemAt`]); later passes parse an item again with
+//! [`parser::item_at`] when they need it, and read function bodies one
+//! statement at a time with [`parser::BodyReader`]. Names are slices of the
+//! source, and the syntax tree and symbol tables are freed before the image is
+//! written.
 #![no_std]
 
 extern crate alloc;

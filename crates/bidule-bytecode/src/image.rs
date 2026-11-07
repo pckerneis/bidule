@@ -936,7 +936,8 @@ pub mod write {
 
     /// Debug section: array names, function names, then (code offset, line, column).
     pub fn debug(names: &[&[u8]], lines: &[(u32, u16, u16)]) -> Vec<u8> {
-        let mut out = Vec::new();
+        let size = align4(2 + names.iter().map(|n| 1 + n.len().min(255)).sum::<usize>()) + 4 + lines.len() * 8;
+        let mut out = Vec::with_capacity(size);
         put_u16(&mut out, names.len() as u16);
         for n in names {
             let n = &n[..n.len().min(255)];

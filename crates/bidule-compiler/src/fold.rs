@@ -97,7 +97,7 @@ impl<'p, 'a> Compiler<'p, 'a> {
         }
         let sym = match self.const_sym(name)? {
             Some(s) => Some(s),
-            None => self.syms.get(name).cloned(),
+            None => self.sym(name).cloned(),
         };
         match (sym, p.sels.as_slice()) {
             (Some(Sym::Const(v, n)), []) => Ok(Some((v, n))),

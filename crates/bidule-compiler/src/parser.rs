@@ -14,6 +14,13 @@ pub struct Parser<'s> {
     /// The current token and the one after it.
     cur: Token<'s>,
     ahead: Token<'s>,
+    /// Byte offsets of `cur` and `ahead`.
+    cur_off: u32,
+    ahead_off: u32,
+    /// Position of the last token taken.
+    prev: Pos,
+    /// The source was parsed before without errors (re-reading an item).
+    checked: bool,
     pub warnings: Vec<Diag>,
 }
 
@@ -31,20 +38,61 @@ pub fn parse<'s>(src: &'s str) -> Result<(Program<'s>, Vec<Diag>), Diag> {
     };
     p.skip_nl();
     while !p.at_eof() {
-        prog.items.push(p.item()?);
+        let (at, offset) = (p.pos(), p.cur_off);
+        let (kind, name) = p.item()?.kind_and_name();
+        prog.items.push(ItemAt { kind, name, at, offset });
         if !p.at_eof() {
             p.end_of_line("a declaration")?;
         }
         p.skip_nl();
     }
+    // the list stays in memory until the image is written
+    prog.items.shrink_to_fit();
     Ok((prog, p.warnings))
 }
 
-/// Parses a function or handler body again, from the position of its `{`
-/// that [`parse`] recorded. `src` is the source given to [`parse`].
-pub fn parse_body<'s>(src: &'s str, at: Pos) -> R<Block<'s>> {
-    let mut p = Parser::new(Lexer::at(src, at));
-    p.block()
+/// Parses a top-level item again from the position [`parse`] recorded for it.
+/// Its body, if any, is not parsed: only its position is found.
+pub fn item_at<'s>(src: &'s str, item: &ItemAt<'s>) -> R<Item<'s>> {
+    let mut p = Parser::new(Lexer::at(src, item.at, item.offset));
+    p.checked = true;
+    p.item()
+}
+
+/// A function or handler body read again, one top-level statement at a time,
+/// from the position [`parse`] recorded. `src` is the source given to [`parse`].
+pub struct BodyReader<'s> {
+    p: Parser<'s>,
+}
+
+impl<'s> BodyReader<'s> {
+    pub fn new(src: &'s str, body: BodyPos) -> R<Self> {
+        let mut p = Parser::new(Lexer::at(src, body.start, body.offset));
+        p.expect(P::LBrace)?;
+        p.skip_nl();
+        Ok(BodyReader { p })
+    }
+
+    /// The next statement, or `None` at the closing brace.
+    pub fn next_stmt(&mut self) -> R<Option<Stmt<'s>>> {
+        if self.p.is(P::RBrace) {
+            return Ok(None);
+        }
+        if self.p.at_eof() {
+            return self.p.unexpected("'}'");
+        }
+        let s = self.p.stmt()?;
+        self.p.end_of_line("a statement")?;
+        Ok(Some(s))
+    }
+}
+
+/// A finished list at its exact size: the default growth can leave up to
+/// three quarters of it unused, and items stay in memory for the whole
+/// compilation.
+fn fit<T>(mut v: Vec<T>) -> Vec<T> {
+    v.shrink_to_fit();
+    v
 }
 
 /// `// @key value` lines before the first declaration.
@@ -78,12 +126,16 @@ impl<'s> Parser<'s> {
     /// A parser reading `lex`, which must have passed [`Lexer::check`].
     fn new(lex: Lexer<'s>) -> Self {
         let mut toks = Stream::new(lex);
-        let cur = toks.next();
-        let ahead = toks.next();
+        let (cur, cur_off) = toks.next_token();
+        let (ahead, ahead_off) = toks.next_token();
         Parser {
             toks,
             cur,
             ahead,
+            cur_off,
+            ahead_off,
+            prev: Pos::default(),
+            checked: false,
             warnings: Vec::new(),
         }
     }
@@ -107,9 +159,11 @@ impl<'s> Parser<'s> {
     }
     fn bump(&mut self) -> Token<'s> {
         let t = self.cur;
+        self.prev = t.pos;
         if t.tok != Tok::Eof {
             self.cur = self.ahead;
-            self.ahead = self.toks.next();
+            self.cur_off = self.ahead_off;
+            (self.ahead, self.ahead_off) = self.toks.next_token();
         }
         t
     }
@@ -166,7 +220,7 @@ impl<'s> Parser<'s> {
         }
     }
     fn ident(&mut self, what: &str) -> R<Name<'s>> {
-        match self.peek().clone() {
+        match *self.peek() {
             Tok::Ident(s) => {
                 let pos = self.bump().pos;
                 Ok(Name { text: s, pos })
@@ -192,7 +246,7 @@ impl<'s> Parser<'s> {
 
     fn item(&mut self) -> R<Item<'s>> {
         let pos = self.pos();
-        match self.peek().clone() {
+        match *self.peek() {
             Tok::Kw(Kw::Const) => {
                 self.bump();
                 let name = self.ident("a constant name")?;
@@ -241,7 +295,7 @@ impl<'s> Parser<'s> {
                     fields.push(Field { name, shape });
                     Ok(())
                 })?;
-                Ok(Item::Record { name, fields })
+                Ok(Item::Record { name, fields: fit(fields) })
             }
             Tok::Kw(Kw::Enum) => {
                 self.bump();
@@ -254,7 +308,10 @@ impl<'s> Parser<'s> {
                     members.push((m, v));
                     Ok(())
                 })?;
-                Ok(Item::Enum { name, members })
+                Ok(Item::Enum {
+                    name,
+                    members: fit(members),
+                })
             }
             Tok::Kw(Kw::Sprite) => {
                 self.bump();
@@ -264,7 +321,7 @@ impl<'s> Parser<'s> {
                 let size = if self.eat(P::Comma) {
                     let w = self.expr()?;
                     self.expect(P::Comma)?;
-                    Some((w, self.expr()?))
+                    Some(Box::new((w, self.expr()?)))
                 } else {
                     None
                 };
@@ -298,10 +355,43 @@ impl<'s> Parser<'s> {
     /// A function or handler body: parsed to report syntax errors in order,
     /// then dropped. The compiler parses it again with [`parse_body`] when it
     /// needs it, so only one function's syntax tree is in memory at a time.
-    fn skim_block(&mut self) -> R<Pos> {
-        let pos = self.pos();
-        self.block()?;
-        Ok(pos)
+    fn skim_block(&mut self) -> R<BodyPos> {
+        let (start, offset) = (self.pos(), self.cur_off);
+        self.expect(P::LBrace)?;
+        if self.checked {
+            // parsed before: only find the closing brace
+            let mut depth = 1;
+            loop {
+                match self.bump().tok {
+                    Tok::P(P::LBrace) => depth += 1,
+                    Tok::P(P::RBrace) => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return Ok(BodyPos {
+                                start,
+                                end: self.prev,
+                                offset,
+                            });
+                        }
+                    }
+                    Tok::Eof => return self.unexpected("'}'"),
+                    _ => {}
+                }
+            }
+        }
+        // as `block`, without keeping the statements
+        self.skip_nl();
+        loop {
+            if self.is(P::RBrace) {
+                let end = self.bump().pos;
+                return Ok(BodyPos { start, end, offset });
+            }
+            if self.at_eof() {
+                return self.unexpected("'}'");
+            }
+            self.stmt()?;
+            self.end_of_line("a statement")?;
+        }
     }
 
     /// Comma- or newline-separated items up to the closing brace (already past '{').
@@ -339,7 +429,7 @@ impl<'s> Parser<'s> {
                 self.expect(P::Comma)?;
             }
         }
-        Ok(v)
+        Ok(fit(v))
     }
 
     /// `fix` or `int` after a colon; returns true for fix.
@@ -397,7 +487,7 @@ impl<'s> Parser<'s> {
                 self.expect(P::RBrack)?;
             }
         }
-        Ok(dims)
+        Ok(fit(dims))
     }
 
     fn init(&mut self) -> R<Init<'s>> {
@@ -424,7 +514,7 @@ impl<'s> Parser<'s> {
                 }
                 self.skip_nl();
             }
-            Ok(Init::List(items, pos))
+            Ok(Init::List(fit(items), pos))
         } else {
             Ok(Init::Expr(self.expr()?))
         }
@@ -439,7 +529,7 @@ impl<'s> Parser<'s> {
         loop {
             if self.is(P::RBrace) {
                 let end = self.bump().pos;
-                return Ok(Block { stmts, end });
+                return Ok(Block { stmts: fit(stmts), end });
             }
             if self.at_eof() {
                 return self.unexpected("'}'");
@@ -451,7 +541,7 @@ impl<'s> Parser<'s> {
 
     fn stmt(&mut self) -> R<Stmt<'s>> {
         let pos = self.pos();
-        let kind = match self.peek().clone() {
+        let kind = match *self.peek() {
             Tok::Kw(Kw::Var) => self.local_decl()?,
             Tok::Kw(Kw::If) => return self.if_stmt(),
             Tok::Kw(Kw::While) => {
@@ -521,11 +611,15 @@ impl<'s> Parser<'s> {
                                 break;
                             }
                         }
-                        cases.push((vals, self.block()?));
+                        cases.push((fit(vals), self.block()?));
                     }
                     self.skip_nl();
                 }
-                StmtKind::Switch { value, cases, default }
+                StmtKind::Switch {
+                    value,
+                    cases: fit(cases),
+                    default,
+                }
             }
             Tok::Kw(Kw::Break) => {
                 self.bump();
@@ -666,7 +760,7 @@ impl<'s> Parser<'s> {
                 self.expect(P::Comma)?;
             }
         }
-        Ok(v)
+        Ok(fit(v))
     }
 
     fn path_rest(&mut self, root: Name<'s>) -> R<Path<'s>> {
@@ -678,7 +772,7 @@ impl<'s> Parser<'s> {
             } else if self.eat(P::Dot) {
                 sels.push(Sel::Field(self.ident("a field name")?));
             } else {
-                return Ok(Path { root, sels });
+                return Ok(Path { root, sels: fit(sels) });
             }
         }
     }
@@ -778,7 +872,7 @@ impl<'s> Parser<'s> {
 
     fn primary(&mut self) -> R<Expr<'s>> {
         let pos = self.pos();
-        match self.peek().clone() {
+        match *self.peek() {
             Tok::Int(v) => {
                 self.bump();
                 Ok(Expr {
@@ -795,7 +889,7 @@ impl<'s> Parser<'s> {
             }
             Tok::Str(raw) => {
                 self.bump();
-                let parts = string_parts(&raw, pos)?;
+                let parts = string_parts(raw, pos)?;
                 Ok(Expr {
                     kind: ExprKind::Str(parts),
                     pos,
@@ -881,7 +975,7 @@ fn string_parts<'s>(raw: &'s str, pos: Pos) -> R<Vec<StrPart<'s>>> {
                 };
                 let inner = &raw[i + 1..end];
                 if !lit.is_empty() {
-                    parts.push(StrPart::Lit(core::mem::take(&mut lit)));
+                    parts.push(StrPart::Lit(fit(core::mem::take(&mut lit))));
                 }
                 parts.push(interp(inner, at(i + 1))?);
                 i = end + 1;
@@ -893,13 +987,13 @@ fn string_parts<'s>(raw: &'s str, pos: Pos) -> R<Vec<StrPart<'s>>> {
         }
     }
     if !lit.is_empty() || parts.is_empty() {
-        parts.push(StrPart::Lit(lit));
+        parts.push(StrPart::Lit(fit(lit)));
     }
     let len: usize = parts.iter().map(|p| if let StrPart::Lit(l) = p { l.len() } else { 0 }).sum();
     if len > 255 {
         return Err(Diag::error(pos, "string literals hold at most 255 characters"));
     }
-    Ok(parts)
+    Ok(fit(parts))
 }
 
 fn parse_fragment<'s>(s: &'s str, pos: Pos) -> R<Expr<'s>> {

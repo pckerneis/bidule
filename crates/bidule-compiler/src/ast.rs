@@ -241,6 +241,18 @@ pub struct Stmt<'s> {
     pub pos: Pos,
 }
 
+/// Where a function or handler body is in the source: the compiler reads it
+/// again from there, one statement at a time (see [`crate::parser::BodyReader`]).
+#[derive(Clone, Copy, Debug)]
+pub struct BodyPos {
+    /// The `{`.
+    pub start: Pos,
+    /// The `}`.
+    pub end: Pos,
+    /// Byte offset of the `{`.
+    pub offset: u32,
+}
+
 #[derive(Clone, Debug)]
 pub struct Param<'s> {
     pub name: Name<'s>,
@@ -289,27 +301,67 @@ pub enum Item<'s> {
     Sprite {
         name: Name<'s>,
         tile: Expr<'s>,
-        size: Option<(Expr<'s>, Expr<'s>)>,
+        /// Boxed: rare, and it would make every item twice as large.
+        size: Option<Box<(Expr<'s>, Expr<'s>)>>,
     },
     Fn {
         name: Name<'s>,
         params: Vec<Param<'s>>,
         ret_fix: bool,
-        /// Position of the body's `{`: see [`crate::parser::parse_body`].
-        body: Pos,
+        body: BodyPos,
     },
     Handler {
         kind: HandlerKind,
         pos: Pos,
         params: Vec<Param<'s>>,
-        /// Position of the body's `{`: see [`crate::parser::parse_body`].
-        body: Pos,
+        body: BodyPos,
     },
+}
+
+impl<'s> Item<'s> {
+    /// What [`ItemAt`] keeps of this item.
+    pub fn kind_and_name(&self) -> (ItemKind, &'s str) {
+        match self {
+            Item::Const { name, .. } => (ItemKind::Const, name.text),
+            Item::Var { name, .. } => (ItemKind::Var, name.text),
+            Item::AudioVar { name, .. } => (ItemKind::AudioVar, name.text),
+            Item::Record { name, .. } => (ItemKind::Record, name.text),
+            Item::Enum { name, .. } => (ItemKind::Enum, name.text),
+            Item::Sprite { name, .. } => (ItemKind::Sprite, name.text),
+            Item::Fn { name, .. } => (ItemKind::Fn, name.text),
+            Item::Handler { .. } => (ItemKind::Handler, ""),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ItemKind {
+    Const,
+    Var,
+    AudioVar,
+    Record,
+    Enum,
+    Sprite,
+    Fn,
+    Handler,
+}
+
+/// A top-level declaration, kept as its kind, name and position: the compiler
+/// parses it again with [`crate::parser::item_at`] each time it needs it, so
+/// the syntax tree of the whole program is never in memory.
+#[derive(Clone, Copy, Debug)]
+pub struct ItemAt<'s> {
+    pub kind: ItemKind,
+    /// Empty for a handler.
+    pub name: &'s str,
+    /// Its first token, and that token's byte offset.
+    pub at: Pos,
+    pub offset: u32,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct Program<'s> {
-    pub items: Vec<Item<'s>>,
+    pub items: Vec<ItemAt<'s>>,
     /// `// @key value` lines before the first declaration.
     pub meta: Vec<(&'s str, &'s str, Pos)>,
 }

@@ -261,16 +261,19 @@ impl<'p, 'a> Compiler<'p, 'a> {
         // user functions first, in declaration order, then handlers
         let mut order: Vec<usize> = Vec::new();
         for (i, it) in prog.items.iter().enumerate() {
-            if matches!(it, Item::Fn { .. }) {
+            if it.kind == ItemKind::Fn {
                 order.push(i);
             }
         }
         let mut seen = [false; 4];
         for (i, it) in prog.items.iter().enumerate() {
-            if let Item::Handler { kind, pos, .. } = it {
-                let k = *kind as usize;
+            if it.kind != ItemKind::Handler {
+                continue;
+            }
+            if let Ok(Item::Handler { kind, pos, .. }) = parser::item_at(self.source, it) {
+                let k = kind as usize;
                 if seen[k] {
-                    self.error(Diag::error(*pos, "this handler is defined twice"));
+                    self.error(Diag::error(pos, "this handler is defined twice"));
                     continue;
                 }
                 seen[k] = true;
@@ -278,23 +281,24 @@ impl<'p, 'a> Compiler<'p, 'a> {
             }
         }
         for (n, &i) in order.iter().enumerate() {
-            if let Item::Fn { name, .. } = &prog.items[i] {
-                if let Some(Sym::Func(id)) = self.syms.get(name.text) {
+            let it = &prog.items[i];
+            if it.kind == ItemKind::Fn {
+                if let Some(Sym::Func(id)) = self.sym(it.name) {
                     let id = *id;
                     self.funcs[id].index = n as u16;
                 }
             }
         }
         for i in order {
-            match &prog.items[i] {
+            let Ok(item) = parser::item_at(self.source, &prog.items[i]) else {
+                continue;
+            };
+            match &item {
                 Item::Fn { name, params, body, .. } => {
-                    let Some(Sym::Func(id)) = self.syms.get(name.text).cloned() else {
+                    let Some(Sym::Func(id)) = self.sym(name.text).cloned() else {
                         continue;
                     };
-                    let Ok(body) = parser::parse_body(self.source, *body) else {
-                        continue;
-                    };
-                    self.gen_fn(Some(id), name.text, None, params, &body);
+                    self.gen_fn(Some(id), name.text, None, params, *body);
                 }
                 Item::Handler { kind, pos, params, body } => {
                     let max = Self::handler_slot(*kind).max_params();
@@ -309,17 +313,14 @@ impl<'p, 'a> Compiler<'p, 'a> {
                         HandlerKind::Draw => "draw",
                         HandlerKind::Audio => "audio",
                     };
-                    let Ok(body) = parser::parse_body(self.source, *body) else {
-                        continue;
-                    };
-                    self.gen_fn(None, name, Some(*kind), params, &body);
+                    self.gen_fn(None, name, Some(*kind), params, *body);
                 }
                 _ => {}
             }
         }
     }
 
-    fn gen_fn<'b>(&mut self, id: Option<usize>, name: &'a str, handler: Option<HandlerKind>, params: &'b [Param<'a>], body: &'b Block<'a>) {
+    fn gen_fn<'b>(&mut self, id: Option<usize>, name: &'a str, handler: Option<HandlerKind>, params: &'b [Param<'a>], body: BodyPos) {
         let start = self.pc() as u32;
         self.f = FnState {
             name,
@@ -360,7 +361,7 @@ impl<'p, 'a> Compiler<'p, 'a> {
             nparams += n;
         }
         self.mark(body.end);
-        self.block(body);
+        self.body(body);
         // falling off the end returns 0
         self.mark(body.end);
         self.push(0);
@@ -390,19 +391,52 @@ impl<'p, 'a> Compiler<'p, 'a> {
         let save_locals = self.f.locals.len();
         let save_slot = self.f.next_slot;
         for s in &b.stmts {
-            if let Err(d) = self.stmt(s) {
-                self.error(d);
-                // keep the stack model consistent after an error
-                self.f.depth = 0;
-            }
-            debug_assert!(
-                self.diags.iter().any(|d| d.is_error()) || self.f.depth == 0,
-                "stack not empty after statement at {:?}",
-                s.pos
-            );
+            self.block_stmt(s);
         }
         self.f.locals.truncate(save_locals);
         self.f.next_slot = save_slot;
+    }
+
+    /// Grows the code and the line table by about an eighth when they run
+    /// low, instead of letting them double: they hold the whole program.
+    fn room(&mut self) {
+        // more than most statements emit; a longer one just doubles the vector
+        const SLACK: usize = 256;
+        if self.code.capacity() - self.code.len() < SLACK {
+            self.code.reserve_exact(self.code.len() / 8 + 2 * SLACK);
+        }
+        if self.lines.capacity() - self.lines.len() < 4 {
+            self.lines.reserve_exact(self.lines.len() / 8 + 32);
+        }
+    }
+
+    /// A function body, read from the source one statement at a time so only
+    /// that statement's syntax tree is in memory.
+    fn body(&mut self, body: BodyPos) {
+        let save_locals = self.f.locals.len();
+        let save_slot = self.f.next_slot;
+        // the whole source parsed: reading the body again can't fail
+        if let Ok(mut r) = parser::BodyReader::new(self.source, body) {
+            while let Ok(Some(s)) = r.next_stmt() {
+                self.block_stmt(&s);
+            }
+        }
+        self.f.locals.truncate(save_locals);
+        self.f.next_slot = save_slot;
+    }
+
+    fn block_stmt<'b>(&mut self, s: &'b Stmt<'a>) {
+        self.room();
+        if let Err(d) = self.stmt(s) {
+            self.error(d);
+            // keep the stack model consistent after an error
+            self.f.depth = 0;
+        }
+        debug_assert!(
+            self.diags.iter().any(|d| d.is_error()) || self.f.depth == 0,
+            "stack not empty after statement at {:?}",
+            s.pos
+        );
     }
 
     fn stmt<'b>(&mut self, s: &'b Stmt<'a>) -> R<()> {
@@ -623,7 +657,7 @@ impl<'p, 'a> Compiler<'p, 'a> {
     fn enum_member(&self, e: &Expr<'a>) -> Option<usize> {
         if let ExprKind::Path(p) = &e.kind {
             if p.sels.len() == 1 {
-                if let Some(Sym::Enum(id)) = self.syms.get(p.root.text) {
+                if let Some(Sym::Enum(id)) = self.sym(p.root.text) {
                     return Some(*id);
                 }
             }
@@ -875,7 +909,7 @@ impl<'p, 'a> Compiler<'p, 'a> {
         } else {
             let sym = match self.const_sym(name)? {
                 Some(s) => Some(s),
-                None => self.syms.get(name).cloned(),
+                None => self.sym(name).cloned(),
             };
             match sym {
                 Some(Sym::Const(v, n)) => Res::Const(v, n),
@@ -885,7 +919,7 @@ impl<'p, 'a> Compiler<'p, 'a> {
                     let base = if a.rom { Base::Rom(a.id) } else { Base::Pool(a.id) };
                     let shape = match a.elem {
                         Elem::Rec(r) if a.dims.is_empty() => Shape::Rec(r),
-                        e => Shape::Arr(e, a.dims.clone()),
+                        e => Shape::Arr(e, a.dims.to_vec()),
                     };
                     Res::View(View {
                         base,
@@ -908,7 +942,7 @@ impl<'p, 'a> Compiler<'p, 'a> {
                     let v = def.members.iter().find(|x| x.0 == m.text).map(|x| x.1);
                     let Some(v) = v else {
                         let cands: Vec<&str> = def.members.iter().map(|x| x.0).collect();
-                        return Err(match crate::diag::suggest(&m.text, cands.iter().copied()) {
+                        return Err(match crate::diag::suggest(m.text, cands.iter().copied()) {
                             Some(s) => Diag::error(m.pos, format!("enum {} has no member '{}' — did you mean '{}'?", name, m.text, s)),
                             None => Diag::error(m.pos, format!("enum {} has no member '{}'", name, m.text)),
                         });
@@ -971,7 +1005,7 @@ impl<'p, 'a> Compiler<'p, 'a> {
             }
         }
         let Some(slot) = found else {
-            return Err(match crate::diag::suggest(&n.text, names.iter().copied()) {
+            return Err(match crate::diag::suggest(n.text, names.iter().copied()) {
                 Some(s) => Diag::error(
                     n.pos,
                     format!("no asset {}.{} in this cart — did you mean {}.{}?", prefix, n.text, prefix, s),
@@ -1013,9 +1047,9 @@ impl<'p, 'a> Compiler<'p, 'a> {
                     return Err(Diag::error(f.pos, format!("'{}' has no fields", v.name)));
                 };
                 let rec = &self.records[r];
-                let Some(fd) = rec.field(&f.text).cloned() else {
+                let Some(fd) = rec.field(f.text).cloned() else {
                     let cands: Vec<&str> = rec.fields.iter().map(|x| x.name).collect();
-                    return Err(match crate::diag::suggest(&f.text, cands.iter().copied()) {
+                    return Err(match crate::diag::suggest(f.text, cands.iter().copied()) {
                         Some(s) => Diag::error(f.pos, format!("{} has no field '{}' — did you mean '{}'?", rec.name, f.text, s)),
                         None => Diag::error(f.pos, format!("{} has no field '{}'", rec.name, f.text)),
                     });
@@ -1279,7 +1313,7 @@ impl<'p, 'a> Compiler<'p, 'a> {
             "frac" => return Ok(Num::Fix),
             _ => {}
         }
-        if let Some(Sym::Func(f)) = self.syms.get(n) {
+        if let Some(Sym::Func(f)) = self.sym(n) {
             return Ok(self.funcs[*f].ret);
         }
         if let Some(b) = builtins::by_name(n) {
@@ -1497,7 +1531,7 @@ impl<'p, 'a> Compiler<'p, 'a> {
                 _ => Num::Int,
             });
         }
-        if let Some(Sym::Func(f)) = self.syms.get(n).cloned() {
+        if let Some(Sym::Func(f)) = self.sym(n).cloned() {
             return self.call_user(f, name, args, pos);
         }
         let Some(b) = builtins::by_name(n) else {
@@ -1788,11 +1822,11 @@ impl<'p, 'a> Compiler<'p, 'a> {
         // (function, param) -> calls passing it on: (callee, callee param)
         let mut edges: Vec<(usize, usize, usize, usize)> = Vec::new();
         for f in 0..self.funcs.len() {
-            let Item::Fn { body, .. } = &prog.items[self.funcs[f].item] else {
+            let Ok(Item::Fn { body, .. }) = parser::item_at(self.source, &prog.items[self.funcs[f].item]) else {
                 continue;
             };
             // parsed when the whole source was: it can't fail now
-            let Ok(body) = parser::parse_body(self.source, *body) else {
+            let Ok(mut body) = parser::BodyReader::new(self.source, body) else {
                 continue;
             };
             let names: Vec<&str> = self.funcs[f].params.iter().map(|p| p.0).collect();
@@ -1803,7 +1837,9 @@ impl<'p, 'a> Compiler<'p, 'a> {
                 calls: Vec::new(),
                 syms: &self.syms,
             };
-            w.block(&body);
+            while let Ok(Some(s)) = body.next_stmt() {
+                w.stmt(&s);
+            }
             let calls = core::mem::take(&mut w.calls);
             for (p, callee, cp) in calls {
                 edges.push((f, p, callee, cp));
@@ -1856,7 +1892,7 @@ struct WriteScan<'s, 'a> {
     names: &'s [&'s str],
     direct: &'s mut Vec<bool>,
     calls: Vec<(usize, usize, usize)>,
-    syms: &'s BTreeMap<&'a str, Sym>,
+    syms: &'s BTreeMap<&'a str, (Sym, Pos)>,
 }
 
 impl<'s, 'a> WriteScan<'s, 'a> {
@@ -1934,7 +1970,7 @@ impl<'s, 'a> WriteScan<'s, 'a> {
     fn expr(&mut self, e: &Expr<'a>) {
         match &e.kind {
             ExprKind::Call(name, args) => {
-                if let Some(b) = builtins::by_name(&name.text) {
+                if let Some(b) = builtins::by_name(name.text) {
                     for (a, k) in args.iter().zip(b.args) {
                         if *k == Arg::ArrW {
                             if let Some(i) = self.param_of(a) {
@@ -1942,7 +1978,7 @@ impl<'s, 'a> WriteScan<'s, 'a> {
                             }
                         }
                     }
-                } else if let Some(Sym::Func(g)) = self.syms.get(name.text) {
+                } else if let Some((Sym::Func(g), _)) = self.syms.get(name.text) {
                     for (q, a) in args.iter().enumerate() {
                         if let Some(i) = self.param_of(a) {
                             self.calls.push((i, *g, q));

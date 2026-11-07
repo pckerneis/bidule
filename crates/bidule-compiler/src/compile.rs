@@ -13,6 +13,7 @@ use bidule_bytecode::{limits, verify, COMPILER_VERSION};
 use crate::ast::*;
 use crate::diag::{suggest, Diag, Pos};
 use crate::gen::FnState;
+use crate::parser;
 use crate::types::*;
 
 /// Raw asset sections to pack into the cart; their name tables give `Sprites.NAME` etc.
@@ -101,8 +102,8 @@ pub struct Compiler<'p, 'a> {
     pub source: &'a str,
     pub opts: Options,
     pub diags: Vec<Diag>,
-    pub syms: BTreeMap<&'a str, Sym>,
-    sym_pos: BTreeMap<&'a str, Pos>,
+    /// Every declared name, with where it was declared.
+    pub syms: BTreeMap<&'a str, (Sym, Pos)>,
     consts: BTreeMap<&'a str, ConstState>,
     pub records: Vec<RecDef<'a>>,
     pub enums: Vec<EnumDef<'a>>,
@@ -114,9 +115,9 @@ pub struct Compiler<'p, 'a> {
     pub array_names: Vec<String>,
     pool_used: u32,
     pub tables: Vec<write::Table>,
-    text_tables: BTreeMap<Vec<u8>, u16>,
+    /// The tables made for string literals, shared by equal literals.
+    text_tables: Vec<u16>,
     pub templates: Vec<Vec<u8>>,
-    template_ids: BTreeMap<Vec<u8>, u16>,
     pub funcs: Vec<FnSig<'a>>,
     pub code: Vec<u8>,
     pub lines: Vec<(u32, u16, u16)>,
@@ -168,7 +169,13 @@ impl<'a> Parts<'a> {
             let text_v = image::Templates::from_bytes(&text).map_err(|e| Diag::error(Pos::default(), format!("internal: {}", e)))?;
             let p = image::Program::parse(&program, &self.code, rom_v, text_v, None)
                 .map_err(|e| Diag::error(Pos::default(), format!("internal: {}", e)))?;
-            let mut scratch = vec![0u8; limits::FN_CODE_BYTES];
+            // as long as the longest function, not the longest allowed
+            let mut longest = 0;
+            for (i, e) in self.fn_entries.iter().enumerate() {
+                let end = self.fn_entries.get(i + 1).map_or(self.code.len(), |n| n.start as usize);
+                longest = longest.max(end - e.start as usize);
+            }
+            let mut scratch = vec![0u8; longest.min(limits::FN_CODE_BYTES)];
             let mut maxes = Vec::with_capacity(p.functions as usize);
             for f in 0..p.functions {
                 match verify::max_stack(&p, f, &mut scratch) {
@@ -192,7 +199,9 @@ impl<'a> Parts<'a> {
         } else {
             None
         };
-        drop(self.lines);
+        // only the sections themselves from here on
+        drop((self.lines, self.array_names, self.fn_names, self.fn_entries, self.meta));
+        drop((self.globals, self.audio_vars, self.arrays));
         let mut secs: Vec<(u16, &[u8])> = Vec::with_capacity(12);
         secs.push((section::META, &meta));
         secs.push((section::PROGRAM, &program));
@@ -231,7 +240,6 @@ impl<'p, 'a> Compiler<'p, 'a> {
             opts,
             diags: Vec::new(),
             syms: BTreeMap::new(),
-            sym_pos: BTreeMap::new(),
             consts: BTreeMap::new(),
             records: Vec::new(),
             enums: Vec::new(),
@@ -243,9 +251,8 @@ impl<'p, 'a> Compiler<'p, 'a> {
             array_names: Vec::new(),
             pool_used: 0,
             tables: Vec::new(),
-            text_tables: BTreeMap::new(),
+            text_tables: Vec::new(),
             templates: Vec::new(),
-            template_ids: BTreeMap::new(),
             funcs: Vec::new(),
             code: Vec::new(),
             lines: Vec::new(),
@@ -265,7 +272,7 @@ impl<'p, 'a> Compiler<'p, 'a> {
 
     // ---------- names ----------
 
-    fn claim(&mut self, name: &'p Name<'a>, sym: Sym) -> R<()> {
+    fn claim(&mut self, name: &Name<'a>, sym: Sym) -> R<()> {
         let n = name.text;
         if BUILTIN_CONSTS.iter().any(|c| c.0 == n) {
             return Err(Diag::error(name.pos, format!("'{}' is a built-in constant; pick another name", n)));
@@ -276,12 +283,15 @@ impl<'p, 'a> Compiler<'p, 'a> {
         if ASSET_PREFIXES.contains(&n) || n == "Sound" || bidule_bytecode::builtins::is_reserved_name(n) {
             return Err(Diag::error(name.pos, format!("'{}' is reserved; pick another name", n)));
         }
-        if let Some(p) = self.sym_pos.get(n) {
+        if let Some((_, p)) = self.syms.get(n) {
             return Err(Diag::error(name.pos, format!("'{}' is already declared on line {}", n, p.line)));
         }
-        self.sym_pos.insert(n, name.pos);
-        self.syms.insert(n, sym);
+        self.syms.insert(n, (sym, name.pos));
         Ok(())
+    }
+
+    pub fn sym(&self, name: &str) -> Option<&Sym> {
+        self.syms.get(name).map(|e| &e.0)
     }
 
     /// "unknown X 'n' — did you mean 'm'?"
@@ -292,7 +302,7 @@ impl<'p, 'a> Compiler<'p, 'a> {
             .copied()
             .chain(extra.iter().copied())
             .chain(BUILTIN_CONSTS.iter().map(|c| c.0));
-        match suggest(&name.text, cands) {
+        match suggest(name.text, cands) {
             Some(s) => Diag::error(name.pos, format!("unknown {} '{}' — did you mean '{}'?", what, name.text, s)),
             None => Diag::error(name.pos, format!("unknown {} '{}'", what, name.text)),
         }
@@ -325,7 +335,11 @@ impl<'p, 'a> Compiler<'p, 'a> {
             array_names: self.array_names,
             tables: self.tables,
             templates: self.templates,
-            code: self.code,
+            code: {
+                let mut c = self.code;
+                c.shrink_to_fit();
+                c
+            },
             lines: self.lines,
             fn_entries: self.fn_entries,
             fn_names: self.fn_names,
@@ -333,7 +347,7 @@ impl<'p, 'a> Compiler<'p, 'a> {
         }
     }
 
-    pub fn load_assets(&mut self) {
+    fn load_assets(&mut self) {
         let raw = self.raw_assets;
         let secs = [
             (raw.sprites, section::SPRITES),
@@ -361,26 +375,29 @@ impl<'p, 'a> Compiler<'p, 'a> {
     }
 
     /// Records and enums first: other declarations refer to them.
-    pub fn declare_types(&mut self) {
+    fn declare_types(&mut self) {
         let prog = self.prog;
-        for (i, item) in prog.items.iter().enumerate() {
-            match item {
-                Item::Record { name, .. } => {
+        for (i, it) in prog.items.iter().enumerate() {
+            match it.kind {
+                ItemKind::Record => {
+                    let Ok(Item::Record { name, .. }) = parser::item_at(self.source, it) else {
+                        continue;
+                    };
                     let id = self.records.len();
                     self.records.push(RecDef {
-                        name: &name.text,
+                        name: name.text,
                         pos: name.pos,
                         item: i,
                         fields: Vec::new(),
                         leaves: Vec::new(),
                         state: RecState::Pending,
                     });
-                    if let Err(d) = self.claim(name, Sym::Record(id)) {
+                    if let Err(d) = self.claim(&name, Sym::Record(id)) {
                         self.error(d);
                     }
                 }
-                Item::Const { name, .. } => {
-                    self.consts.insert(&name.text, ConstState::Pending(i));
+                ItemKind::Const => {
+                    self.consts.insert(it.name, ConstState::Pending(i));
                 }
                 _ => {}
             }
@@ -390,14 +407,14 @@ impl<'p, 'a> Compiler<'p, 'a> {
                 self.error(d);
             }
         }
-        for item in prog.items.iter() {
-            if let Item::Enum { name, members } = item {
+        for it in prog.items.iter().filter(|it| it.kind == ItemKind::Enum) {
+            if let Ok(Item::Enum { name, members }) = parser::item_at(self.source, it) {
                 let mut def = EnumDef {
-                    name: &name.text,
+                    name: name.text,
                     members: Vec::new(),
                 };
                 let mut next = 0i32;
-                for (m, v) in members {
+                for (m, v) in &members {
                     if let Some(v) = v {
                         match self.const_int(v) {
                             Ok(x) => next = x,
@@ -407,12 +424,12 @@ impl<'p, 'a> Compiler<'p, 'a> {
                     if def.members.iter().any(|x| x.0 == m.text) {
                         self.error(Diag::error(m.pos, format!("'{}' appears twice in enum {}", m.text, name.text)));
                     }
-                    def.members.push((&m.text, next));
+                    def.members.push((m.text, next));
                     next = next.wrapping_add(1);
                 }
                 let id = self.enums.len();
                 self.enums.push(def);
-                if let Err(d) = self.claim(name, Sym::Enum(id)) {
+                if let Err(d) = self.claim(&name, Sym::Enum(id)) {
                     self.error(d);
                 }
             }
@@ -431,12 +448,12 @@ impl<'p, 'a> Compiler<'p, 'a> {
             RecState::Pending => {}
         }
         self.records[id].state = RecState::Resolving;
-        let Item::Record { fields, .. } = &self.prog.items[self.records[id].item] else {
+        let Ok(Item::Record { fields, .. }) = parser::item_at(self.source, &self.prog.items[self.records[id].item]) else {
             unreachable!()
         };
         let mut defs = Vec::new();
         let mut leaves = Vec::new();
-        for f in fields {
+        for f in &fields {
             if defs.iter().any(|d: &FieldDef| d.name == f.name.text) {
                 return Err(Diag::error(f.name.pos, format!("field '{}' declared twice", f.name.text)));
             }
@@ -446,7 +463,7 @@ impl<'p, 'a> Compiler<'p, 'a> {
             let ty = match &f.shape.ty {
                 TypeName::Int => FieldTy::Num(Num::Int),
                 TypeName::Fix => FieldTy::Num(Num::Fix),
-                TypeName::Record(n) => match self.syms.get(n.text) {
+                TypeName::Record(n) => match self.sym(n.text) {
                     Some(Sym::Record(r)) => FieldTy::Rec(*r),
                     _ => return Err(self.unknown("record type", n, &[])),
                 },
@@ -470,7 +487,7 @@ impl<'p, 'a> Compiler<'p, 'a> {
             }
             let leaf_n = leaves.len() as u16 - leaf_off;
             defs.push(FieldDef {
-                name: &f.name.text,
+                name: f.name.text,
                 ty,
                 dims,
                 count,
@@ -520,25 +537,25 @@ impl<'p, 'a> Compiler<'p, 'a> {
             None => return Ok(None),
         };
         match st {
-            ConstState::Done => Ok(self.syms.get(name).cloned()),
+            ConstState::Done => Ok(self.sym(name).cloned()),
             ConstState::Visiting => Err(Diag::error(
-                self.sym_pos.get(name).copied().unwrap_or_default(),
+                self.syms.get(name).map(|e| e.1).unwrap_or_default(),
                 format!("constant '{}' depends on itself", name),
             )),
             ConstState::Pending(i) => {
-                let Item::Const { name: n, shape, init } = &self.prog.items[i] else {
+                let Ok(Item::Const { name: n, shape, init }) = parser::item_at(self.source, &self.prog.items[i]) else {
                     unreachable!()
                 };
-                self.consts.insert(&n.text, ConstState::Visiting);
-                let r = self.declare_const(n, shape, init);
-                self.consts.insert(&n.text, ConstState::Done);
+                self.consts.insert(n.text, ConstState::Visiting);
+                let r = self.declare_const(&n, &shape, &init);
+                self.consts.insert(n.text, ConstState::Done);
                 r?;
-                Ok(self.syms.get(name).cloned())
+                Ok(self.sym(name).cloned())
             }
         }
     }
 
-    fn declare_const(&mut self, name: &'p Name<'a>, shape: &'p Shape<'a>, init: &'p Init<'a>) -> R<()> {
+    fn declare_const(&mut self, name: &Name<'a>, shape: &Shape<'a>, init: &Init<'a>) -> R<()> {
         // a table: brackets, a record type, or text
         let is_text = matches!(init, Init::Expr(e) if matches!(e.kind, ExprKind::Str(_)));
         if !shape.dims.is_empty() || matches!(shape.ty, TypeName::Record(_)) || is_text || matches!(init, Init::List(..)) {
@@ -600,19 +617,25 @@ impl<'p, 'a> Compiler<'p, 'a> {
 
     /// A read-only text table for a string literal (null-terminated, shared).
     pub fn text_table(&mut self, bytes: &[u8], pos: Pos) -> R<u16> {
-        if let Some(&id) = self.text_tables.get(bytes) {
+        // compared with the tables themselves: an index would keep a copy
+        let same = |t: &write::Table| {
+            t.values.len() == bytes.len() + 1 && t.values.iter().zip(bytes.iter().chain([&0])).all(|(&v, &b)| v == b as i32)
+        };
+        if let Some(&id) = self.text_tables.iter().find(|&&id| same(&self.tables[id as usize])) {
             return Ok(id);
         }
         let mut v: Vec<i32> = bytes.iter().map(|&b| b as i32).collect();
         v.push(0);
         let id = self.alloc_table(v, 0, pos)?;
-        self.text_tables.insert(Vec::from(bytes), id);
+        self.text_tables.push(id);
         Ok(id)
     }
 
     pub fn template(&mut self, bytes: Vec<u8>, pos: Pos) -> R<u16> {
-        if let Some(&id) = self.template_ids.get(&bytes) {
-            return Ok(id);
+        // a linear search rather than an index: templates are few, and an
+        // index would keep a second copy of each
+        if let Some(id) = self.templates.iter().position(|t| *t == bytes) {
+            return Ok(id as u16);
         }
         if self.templates.len() >= limits::TEMPLATES {
             return Err(Diag::error(
@@ -621,8 +644,9 @@ impl<'p, 'a> Compiler<'p, 'a> {
             ));
         }
         let id = self.templates.len() as u16;
-        self.templates.push(bytes.clone());
-        self.template_ids.insert(bytes, id);
+        let mut bytes = bytes;
+        bytes.shrink_to_fit();
+        self.templates.push(bytes);
         Ok(id)
     }
 
@@ -655,7 +679,7 @@ impl<'p, 'a> Compiler<'p, 'a> {
         Ok(match &shape.ty {
             TypeName::Int => Elem::Num(Num::Int),
             TypeName::Fix => Elem::Num(Num::Fix),
-            TypeName::Record(n) => match self.syms.get(n.text) {
+            TypeName::Record(n) => match self.sym(n.text) {
                 Some(Sym::Record(r)) => Elem::Rec(*r),
                 _ => return Err(self.unknown("record type", n, &[])),
             },
@@ -780,7 +804,7 @@ impl<'p, 'a> Compiler<'p, 'a> {
         Ok(())
     }
 
-    fn const_table(&mut self, name: &'p Name<'a>, shape: &'p Shape<'a>, init: &'p Init<'a>) -> R<ArrSym> {
+    fn const_table(&mut self, name: &Name<'a>, shape: &Shape<'a>, init: &Init<'a>) -> R<ArrSym> {
         let elem = self.elem_of(shape)?;
         let is_text = matches!(init, Init::Expr(e) if matches!(e.kind, ExprKind::Str(_)));
         let mut dims = self.dims_of(&shape.dims, name.pos, true)?;
@@ -816,7 +840,12 @@ impl<'p, 'a> Compiler<'p, 'a> {
                 self.num_values(init, num, &dims, false, &mut v, 0)?;
                 let cols = if dims.len() == 2 { dims[1] as u16 } else { 0 };
                 let id = self.alloc_table(v, cols, name.pos)?;
-                Ok(ArrSym { id, rom: true, elem, dims })
+                Ok(ArrSym {
+                    id,
+                    rom: true,
+                    elem,
+                    dims: dims.into(),
+                })
             }
             Elem::Rec(r) => {
                 if dims.len() != 1 {
@@ -845,7 +874,7 @@ impl<'p, 'a> Compiler<'p, 'a> {
                     id: first.unwrap(),
                     rom: true,
                     elem,
-                    dims,
+                    dims: dims.into(),
                 })
             }
         }
@@ -853,21 +882,25 @@ impl<'p, 'a> Compiler<'p, 'a> {
 
     // ---------- globals, functions, sprites, audio vars ----------
 
-    pub fn declare_values(&mut self) {
+    fn declare_values(&mut self) {
         let prog = self.prog;
         // constants (lazily, so order doesn't matter)
-        for item in prog.items.iter() {
-            if let Item::Const { name, .. } = item {
-                if let Err(d) = self.const_sym(&name.text) {
-                    self.error(d);
-                }
+        for it in prog.items.iter().filter(|it| it.kind == ItemKind::Const) {
+            if let Err(d) = self.const_sym(it.name) {
+                self.error(d);
             }
         }
-        for (i, item) in prog.items.iter().enumerate() {
-            let r = match item {
+        for (i, it) in prog.items.iter().enumerate() {
+            if matches!(it.kind, ItemKind::Const | ItemKind::Record | ItemKind::Enum | ItemKind::Handler) {
+                continue;
+            }
+            let Ok(item) = parser::item_at(self.source, it) else {
+                continue;
+            };
+            let r = match &item {
                 Item::Var { name, shape, init } => self.declare_var(name, shape, init.as_ref()),
                 Item::AudioVar { name, fix, init } => self.declare_audio_var(name, *fix, init),
-                Item::Sprite { name, tile, size } => self.declare_sprite(name, tile, size.as_ref()),
+                Item::Sprite { name, tile, size } => self.declare_sprite(name, tile, size.as_deref()),
                 Item::Fn { name, params, ret_fix, .. } => self.declare_fn(i, name, params, *ret_fix),
                 _ => Ok(()),
             };
@@ -877,7 +910,7 @@ impl<'p, 'a> Compiler<'p, 'a> {
         }
     }
 
-    fn declare_var(&mut self, name: &'p Name<'a>, shape: &'p Shape<'a>, init: Option<&'p Init<'a>>) -> R<()> {
+    fn declare_var(&mut self, name: &Name<'a>, shape: &Shape<'a>, init: Option<&Init<'a>>) -> R<()> {
         let elem = self.elem_of(shape)?;
         let text = init.and_then(|i| match i {
             Init::Expr(e) => e.plain_str(),
@@ -961,7 +994,7 @@ impl<'p, 'a> Compiler<'p, 'a> {
                         id,
                         rom: false,
                         elem,
-                        dims,
+                        dims: dims.into(),
                     }),
                 )
             }
@@ -986,14 +1019,14 @@ impl<'p, 'a> Compiler<'p, 'a> {
                         id: first.unwrap(),
                         rom: false,
                         elem,
-                        dims,
+                        dims: dims.into(),
                     }),
                 )
             }
         }
     }
 
-    fn declare_audio_var(&mut self, name: &'p Name<'a>, fix: bool, init: &'p Expr<'a>) -> R<()> {
+    fn declare_audio_var(&mut self, name: &Name<'a>, fix: bool, init: &Expr<'a>) -> R<()> {
         let num = if fix { Num::Fix } else { Num::Int };
         let (v, n) = self
             .const_eval(init)?
@@ -1009,7 +1042,7 @@ impl<'p, 'a> Compiler<'p, 'a> {
         self.claim(name, Sym::Audio(self.audio_vars.len() as u8 - 1, num))
     }
 
-    fn declare_sprite(&mut self, name: &'p Name<'a>, tile: &Expr<'a>, size: Option<&(Expr<'a>, Expr<'a>)>) -> R<()> {
+    fn declare_sprite(&mut self, name: &Name<'a>, tile: &Expr<'a>, size: Option<&(Expr<'a>, Expr<'a>)>) -> R<()> {
         let t = self.const_int(tile)?;
         let (w, h) = match size {
             Some((w, h)) => (self.const_int(w)?, self.const_int(h)?),
@@ -1025,11 +1058,11 @@ impl<'p, 'a> Compiler<'p, 'a> {
         self.claim(name, Sym::Const(sprite_value(t, w, h), Num::Int))
     }
 
-    fn declare_fn(&mut self, item: usize, name: &'p Name<'a>, params: &'p [Param<'a>], ret_fix: bool) -> R<()> {
+    fn declare_fn(&mut self, item: usize, name: &Name<'a>, params: &[Param<'a>], ret_fix: bool) -> R<()> {
         if self.funcs.len() >= limits::FUNCTIONS - 4 {
             return Err(Diag::error(name.pos, "too many functions"));
         }
-        let mut ps = Vec::new();
+        let mut ps = Vec::with_capacity(params.len());
         for p in params {
             let k = self.param_kind(p)?;
             if ps.iter().any(|q: &(&str, ParamKind)| q.0 == p.name.text) {
@@ -1038,7 +1071,7 @@ impl<'p, 'a> Compiler<'p, 'a> {
             ps.push((p.name.text, k));
         }
         let sig = FnSig {
-            name: &name.text,
+            name: name.text,
             item,
             writes: vec![false; ps.len()],
             params: ps,

@@ -186,9 +186,10 @@ impl<'s> Stream<'s> {
         }
     }
 
-    pub fn next(&mut self) -> Token<'s> {
+    /// The next token and the byte offset where it starts.
+    pub fn next_token(&mut self) -> (Token<'s>, u32) {
         if let Some(t) = self.eof {
-            return t;
+            return (t, self.lex.start as u32);
         }
         loop {
             let t = match self.lex.next() {
@@ -202,7 +203,7 @@ impl<'s> Stream<'s> {
             if t.tok == Tok::Eof {
                 self.eof = Some(t);
             }
-            return t;
+            return (t, self.lex.start as u32);
         }
     }
 }
@@ -210,6 +211,8 @@ impl<'s> Stream<'s> {
 pub struct Lexer<'s> {
     src: &'s [u8],
     i: usize,
+    /// Where the last token started.
+    start: usize,
     line: u32,
     line_start: usize,
     /// Parentheses and brackets open: newlines inside them are not statement ends.
@@ -223,6 +226,7 @@ impl<'s> Lexer<'s> {
         Lexer {
             src: src.as_bytes(),
             i: 0,
+            start: 0,
             line: 1,
             line_start: 0,
             depth: 0,
@@ -230,27 +234,16 @@ impl<'s> Lexer<'s> {
         }
     }
 
-    /// Lexes from `at`, a position the lexer gave for `src` (not for a fragment).
-    pub fn at(src: &'s str, at: Pos) -> Self {
-        let b = src.as_bytes();
-        let mut line = 1;
-        let mut line_start = 0;
-        if at.line > 1 {
-            for (i, &c) in b.iter().enumerate() {
-                if c == b'\n' {
-                    line += 1;
-                    if line == at.line {
-                        line_start = i + 1;
-                        break;
-                    }
-                }
-            }
-        }
+    /// Lexes from a token the lexer found in `src` (not in a fragment): its
+    /// position and byte offset.
+    pub fn at(src: &'s str, at: Pos, offset: u32) -> Self {
+        let i = offset as usize;
         Lexer {
-            src: b,
-            i: line_start + at.col as usize - 1,
-            line,
-            line_start,
+            src: src.as_bytes(),
+            i,
+            start: i,
+            line: at.line,
+            line_start: i + 1 - at.col as usize,
             depth: 0,
             base: None,
         }
@@ -261,6 +254,7 @@ impl<'s> Lexer<'s> {
         Lexer {
             src: src.as_bytes(),
             i: 0,
+            start: 0,
             line: 1,
             line_start: 0,
             depth: 1,
@@ -321,6 +315,7 @@ impl<'s> Lexer<'s> {
             }
         }
         let pos = self.pos();
+        self.start = self.i;
         let c = self.peek(0);
         if self.i >= self.src.len() {
             return Ok(Token { tok: Tok::Eof, pos });

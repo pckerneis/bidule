@@ -1,11 +1,13 @@
 //! Spec › Compiler constraints: any valid cart compiles within 128 KB of
 //! working RAM. Measured with a counting allocator around the compiler.
 //!
-//! NOT MET YET. The compiler keeps every token and the whole syntax tree in
-//! memory; the planned fix is to compile one function at a time with names
-//! borrowed from the source, and to stream sections out. Until then
-//! `current_levels` is a ratchet against regressions and `within_128_kb` (ignored)
-//! is the target. Run with `--test-threads=1`: the counter is process-wide.
+//! The compiler reads tokens on demand, keeps only the kind, name and position
+//! of each top-level item (parsing it again when it needs it), and holds one
+//! statement of one function body at a time. What stays in memory is the
+//! symbol tables, the code, the line table and, at the end, the image itself,
+//! which carries the whole source. `within_128_kb` is the spec's target;
+//! `current_levels` is a tighter ratchet against regressions. Run with
+//! `--test-threads=1`: the counter is process-wide.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -81,11 +83,11 @@ fn carts() -> Vec<(&'static str, String)> {
     ]
 }
 
-/// Peaks measured when the compiler landed, plus 10%: fail on regressions.
+/// Peaks measured after the memory work, plus about 10%: fail on regressions.
 #[test]
 fn current_levels() {
     let _g = SERIAL.lock().unwrap();
-    let limits = [40, 175, 880, 2050];
+    let limits = [6, 14, 66, 128];
     for ((name, src), kb) in carts().into_iter().zip(limits) {
         let p = peak(&src);
         eprintln!(
@@ -100,7 +102,6 @@ fn current_levels() {
 }
 
 #[test]
-#[ignore = "the compiler does not meet the 128 KB budget yet"]
 fn within_128_kb() {
     let _g = SERIAL.lock().unwrap();
     for (name, src) in carts() {
