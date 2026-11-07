@@ -95,7 +95,7 @@ pub struct ArrSym {
     pub rom: bool,
     pub elem: Elem,
     /// Declared dimensions; empty for a single record.
-    pub dims: Vec<u32>,
+    pub dims: alloc::boxed::Box<[u32]>,
 }
 
 #[derive(Clone, Debug)]

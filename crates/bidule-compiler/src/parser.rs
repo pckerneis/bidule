@@ -7,11 +7,20 @@ use alloc::vec::Vec;
 
 use crate::ast::*;
 use crate::diag::{Diag, Pos};
-use crate::lexer::{Kw, Lexer, Tok, Token, P};
+use crate::lexer::{Kw, Lexer, Stream, Tok, Token, P};
 
-pub struct Parser {
-    toks: Vec<Token>,
-    i: usize,
+pub struct Parser<'s> {
+    toks: Stream<'s>,
+    /// The current token and the one after it.
+    cur: Token<'s>,
+    ahead: Token<'s>,
+    /// Byte offsets of `cur` and `ahead`.
+    cur_off: u32,
+    ahead_off: u32,
+    /// Position of the last token taken.
+    prev: Pos,
+    /// The source was parsed before without errors (re-reading an item).
+    checked: bool,
     pub warnings: Vec<Diag>,
 }
 
@@ -20,30 +29,74 @@ type R<T> = Result<T, Diag>;
 const META_KEYS: [&str; 7] = ["title", "author", "version", "desc", "id", "license", "spoilers"];
 
 /// Parses a whole cart source.
-pub fn parse(src: &str) -> Result<(Program, Vec<Diag>), Diag> {
-    let toks = Lexer::new(src).tokenize()?;
-    let mut p = Parser {
-        toks,
-        i: 0,
-        warnings: Vec::new(),
-    };
+pub fn parse<'s>(src: &'s str) -> Result<(Program<'s>, Vec<Diag>), Diag> {
+    Lexer::new(src).check()?;
+    let mut p = Parser::new(Lexer::new(src));
     let mut prog = Program {
         items: Vec::new(),
         meta: metadata(src, &mut p.warnings),
     };
     p.skip_nl();
     while !p.at_eof() {
-        prog.items.push(p.item()?);
+        let (at, offset) = (p.pos(), p.cur_off);
+        let (kind, name) = p.item()?.kind_and_name();
+        prog.items.push(ItemAt { kind, name, at, offset });
         if !p.at_eof() {
             p.end_of_line("a declaration")?;
         }
         p.skip_nl();
     }
+    // the list stays in memory until the image is written
+    prog.items.shrink_to_fit();
     Ok((prog, p.warnings))
 }
 
+/// Parses a top-level item again from the position [`parse`] recorded for it.
+/// Its body, if any, is not parsed: only its position is found.
+pub fn item_at<'s>(src: &'s str, item: &ItemAt<'s>) -> R<Item<'s>> {
+    let mut p = Parser::new(Lexer::at(src, item.at, item.offset));
+    p.checked = true;
+    p.item()
+}
+
+/// A function or handler body read again, one top-level statement at a time,
+/// from the position [`parse`] recorded. `src` is the source given to [`parse`].
+pub struct BodyReader<'s> {
+    p: Parser<'s>,
+}
+
+impl<'s> BodyReader<'s> {
+    pub fn new(src: &'s str, body: BodyPos) -> R<Self> {
+        let mut p = Parser::new(Lexer::at(src, body.start, body.offset));
+        p.expect(P::LBrace)?;
+        p.skip_nl();
+        Ok(BodyReader { p })
+    }
+
+    /// The next statement, or `None` at the closing brace.
+    pub fn next_stmt(&mut self) -> R<Option<Stmt<'s>>> {
+        if self.p.is(P::RBrace) {
+            return Ok(None);
+        }
+        if self.p.at_eof() {
+            return self.p.unexpected("'}'");
+        }
+        let s = self.p.stmt()?;
+        self.p.end_of_line("a statement")?;
+        Ok(Some(s))
+    }
+}
+
+/// A finished list at its exact size: the default growth can leave up to
+/// three quarters of it unused, and items stay in memory for the whole
+/// compilation.
+fn fit<T>(mut v: Vec<T>) -> Vec<T> {
+    v.shrink_to_fit();
+    v
+}
+
 /// `// @key value` lines before the first declaration.
-fn metadata(src: &str, warnings: &mut Vec<Diag>) -> Vec<(String, String, Pos)> {
+fn metadata<'s>(src: &'s str, warnings: &mut Vec<Diag>) -> Vec<(&'s str, &'s str, Pos)> {
     let mut out = Vec::new();
     for (n, line) in src.lines().enumerate() {
         let t = line.trim();
@@ -64,28 +117,53 @@ fn metadata(src: &str, warnings: &mut Vec<Diag>) -> Vec<(String, String, Pos)> {
         if !META_KEYS.contains(&k) {
             warnings.push(Diag::warning(pos, format!("unknown metadata key '@{}'", k)));
         }
-        out.push((String::from(k), String::from(v), pos));
+        out.push((k, v, pos));
     }
     out
 }
 
-impl Parser {
-    fn peek(&self) -> &Tok {
-        &self.toks[self.i].tok
+impl<'s> Parser<'s> {
+    /// A parser reading `lex`, which must have passed [`Lexer::check`].
+    fn new(lex: Lexer<'s>) -> Self {
+        let mut toks = Stream::new(lex);
+        let (cur, cur_off) = toks.next_token();
+        let (ahead, ahead_off) = toks.next_token();
+        Parser {
+            toks,
+            cur,
+            ahead,
+            cur_off,
+            ahead_off,
+            prev: Pos::default(),
+            checked: false,
+            warnings: Vec::new(),
+        }
     }
-    fn peek_at(&self, k: usize) -> &Tok {
-        &self.toks[(self.i + k).min(self.toks.len() - 1)].tok
+    fn peek(&self) -> &Tok<'s> {
+        &self.cur.tok
+    }
+    /// The current token (`k` = 0) or the next one (`k` = 1).
+    fn peek_at(&self, k: usize) -> &Tok<'s> {
+        debug_assert!(k <= 1);
+        if k == 0 {
+            &self.cur.tok
+        } else {
+            &self.ahead.tok
+        }
     }
     fn pos(&self) -> Pos {
-        self.toks[self.i].pos
+        self.cur.pos
     }
     fn at_eof(&self) -> bool {
         *self.peek() == Tok::Eof
     }
-    fn bump(&mut self) -> Token {
-        let t = self.toks[self.i].clone();
-        if self.i + 1 < self.toks.len() {
-            self.i += 1;
+    fn bump(&mut self) -> Token<'s> {
+        let t = self.cur;
+        self.prev = t.pos;
+        if t.tok != Tok::Eof {
+            self.cur = self.ahead;
+            self.cur_off = self.ahead_off;
+            (self.ahead, self.ahead_off) = self.toks.next_token();
         }
         t
     }
@@ -116,7 +194,7 @@ impl Parser {
             self.bump();
         }
     }
-    fn describe(t: &Tok) -> String {
+    fn describe(t: &Tok<'_>) -> String {
         match t {
             Tok::Int(v) => format!("number {}", v),
             Tok::Fix(_) => String::from("a fix number"),
@@ -141,8 +219,8 @@ impl Parser {
             self.unexpected(&format!("'{}'", p.text()))
         }
     }
-    fn ident(&mut self, what: &str) -> R<Name> {
-        match self.peek().clone() {
+    fn ident(&mut self, what: &str) -> R<Name<'s>> {
+        match *self.peek() {
             Tok::Ident(s) => {
                 let pos = self.bump().pos;
                 Ok(Name { text: s, pos })
@@ -166,9 +244,9 @@ impl Parser {
 
     // ---------- top level ----------
 
-    fn item(&mut self) -> R<Item> {
+    fn item(&mut self) -> R<Item<'s>> {
         let pos = self.pos();
-        match self.peek().clone() {
+        match *self.peek() {
             Tok::Kw(Kw::Const) => {
                 self.bump();
                 let name = self.ident("a constant name")?;
@@ -199,7 +277,7 @@ impl Parser {
             }
             Tok::Ident(s) if (s == "init" || s == "update" || s == "draw") && *self.peek_at(1) == Tok::P(P::LParen) => {
                 self.bump();
-                let kind = match s.as_str() {
+                let kind = match s {
                     "init" => HandlerKind::Init,
                     "update" => HandlerKind::Update,
                     _ => HandlerKind::Draw,
@@ -217,7 +295,7 @@ impl Parser {
                     fields.push(Field { name, shape });
                     Ok(())
                 })?;
-                Ok(Item::Record { name, fields })
+                Ok(Item::Record { name, fields: fit(fields) })
             }
             Tok::Kw(Kw::Enum) => {
                 self.bump();
@@ -230,7 +308,10 @@ impl Parser {
                     members.push((m, v));
                     Ok(())
                 })?;
-                Ok(Item::Enum { name, members })
+                Ok(Item::Enum {
+                    name,
+                    members: fit(members),
+                })
             }
             Tok::Kw(Kw::Sprite) => {
                 self.bump();
@@ -240,7 +321,7 @@ impl Parser {
                 let size = if self.eat(P::Comma) {
                     let w = self.expr()?;
                     self.expect(P::Comma)?;
-                    Some((w, self.expr()?))
+                    Some(Box::new((w, self.expr()?)))
                 } else {
                     None
                 };
@@ -251,7 +332,7 @@ impl Parser {
                 let name = self.ident("a function name")?;
                 let params = self.params()?;
                 let ret_fix = if self.eat(P::Colon) { self.scalar_type()? } else { false };
-                let body = self.block()?;
+                let body = self.skim_block()?;
                 Ok(Item::Fn {
                     name,
                     params,
@@ -271,6 +352,48 @@ impl Parser {
         }
     }
 
+    /// A function or handler body: parsed to report syntax errors in order,
+    /// then dropped. The compiler parses it again with [`parse_body`] when it
+    /// needs it, so only one function's syntax tree is in memory at a time.
+    fn skim_block(&mut self) -> R<BodyPos> {
+        let (start, offset) = (self.pos(), self.cur_off);
+        self.expect(P::LBrace)?;
+        if self.checked {
+            // parsed before: only find the closing brace
+            let mut depth = 1;
+            loop {
+                match self.bump().tok {
+                    Tok::P(P::LBrace) => depth += 1,
+                    Tok::P(P::RBrace) => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return Ok(BodyPos {
+                                start,
+                                end: self.prev,
+                                offset,
+                            });
+                        }
+                    }
+                    Tok::Eof => return self.unexpected("'}'"),
+                    _ => {}
+                }
+            }
+        }
+        // as `block`, without keeping the statements
+        self.skip_nl();
+        loop {
+            if self.is(P::RBrace) {
+                let end = self.bump().pos;
+                return Ok(BodyPos { start, end, offset });
+            }
+            if self.at_eof() {
+                return self.unexpected("'}'");
+            }
+            self.stmt()?;
+            self.end_of_line("a statement")?;
+        }
+    }
+
     /// Comma- or newline-separated items up to the closing brace (already past '{').
     fn list_body(&mut self, mut each: impl FnMut(&mut Self) -> R<()>) -> R<()> {
         self.skip_nl();
@@ -286,13 +409,13 @@ impl Parser {
         Ok(())
     }
 
-    fn handler(&mut self, kind: HandlerKind, pos: Pos) -> R<Item> {
+    fn handler(&mut self, kind: HandlerKind, pos: Pos) -> R<Item<'s>> {
         let params = self.params()?;
-        let body = self.block()?;
+        let body = self.skim_block()?;
         Ok(Item::Handler { kind, pos, params, body })
     }
 
-    fn params(&mut self) -> R<Vec<Param>> {
+    fn params(&mut self) -> R<Vec<Param<'s>>> {
         self.expect(P::LParen)?;
         let mut v = Vec::new();
         if !self.eat(P::RParen) {
@@ -306,7 +429,7 @@ impl Parser {
                 self.expect(P::Comma)?;
             }
         }
-        Ok(v)
+        Ok(fit(v))
     }
 
     /// `fix` or `int` after a colon; returns true for fix.
@@ -315,7 +438,7 @@ impl Parser {
             return Ok(true);
         }
         if let Tok::Ident(s) = self.peek() {
-            if s == "int" {
+            if *s == "int" {
                 self.bump();
                 return Ok(false);
             }
@@ -324,7 +447,7 @@ impl Parser {
     }
 
     /// Dimensions after the name, or `: type dims`. Fields without a type are int.
-    fn shape(&mut self, _field: bool) -> R<Shape> {
+    fn shape(&mut self, _field: bool) -> R<Shape<'s>> {
         let mut dims = self.dims()?;
         let mut ty = TypeName::Int;
         let mut explicit = false;
@@ -354,7 +477,7 @@ impl Parser {
         Ok(Shape { ty, dims, explicit })
     }
 
-    fn dims(&mut self) -> R<Vec<Option<Expr>>> {
+    fn dims(&mut self) -> R<Vec<Option<Expr<'s>>>> {
         let mut dims = Vec::new();
         while self.eat(P::LBrack) {
             if self.eat(P::RBrack) {
@@ -364,10 +487,10 @@ impl Parser {
                 self.expect(P::RBrack)?;
             }
         }
-        Ok(dims)
+        Ok(fit(dims))
     }
 
-    fn init(&mut self) -> R<Init> {
+    fn init(&mut self) -> R<Init<'s>> {
         if self.is(P::LBrace) {
             let pos = self.bump().pos;
             let mut items = Vec::new();
@@ -391,7 +514,7 @@ impl Parser {
                 }
                 self.skip_nl();
             }
-            Ok(Init::List(items, pos))
+            Ok(Init::List(fit(items), pos))
         } else {
             Ok(Init::Expr(self.expr()?))
         }
@@ -399,14 +522,14 @@ impl Parser {
 
     // ---------- statements ----------
 
-    fn block(&mut self) -> R<Block> {
+    fn block(&mut self) -> R<Block<'s>> {
         self.expect(P::LBrace)?;
         self.skip_nl();
         let mut stmts = Vec::new();
         loop {
             if self.is(P::RBrace) {
                 let end = self.bump().pos;
-                return Ok(Block { stmts, end });
+                return Ok(Block { stmts: fit(stmts), end });
             }
             if self.at_eof() {
                 return self.unexpected("'}'");
@@ -416,9 +539,9 @@ impl Parser {
         }
     }
 
-    fn stmt(&mut self) -> R<Stmt> {
+    fn stmt(&mut self) -> R<Stmt<'s>> {
         let pos = self.pos();
-        let kind = match self.peek().clone() {
+        let kind = match *self.peek() {
             Tok::Kw(Kw::Var) => self.local_decl()?,
             Tok::Kw(Kw::If) => return self.if_stmt(),
             Tok::Kw(Kw::While) => {
@@ -488,11 +611,15 @@ impl Parser {
                                 break;
                             }
                         }
-                        cases.push((vals, self.block()?));
+                        cases.push((fit(vals), self.block()?));
                     }
                     self.skip_nl();
                 }
-                StmtKind::Switch { value, cases, default }
+                StmtKind::Switch {
+                    value,
+                    cases: fit(cases),
+                    default,
+                }
             }
             Tok::Kw(Kw::Break) => {
                 self.bump();
@@ -516,7 +643,7 @@ impl Parser {
         Ok(Stmt { kind, pos })
     }
 
-    fn local_decl(&mut self) -> R<StmtKind> {
+    fn local_decl(&mut self) -> R<StmtKind<'s>> {
         self.expect_kw(Kw::Var)?;
         let name = self.ident("a variable name")?;
         if self.is(P::LBrack) {
@@ -527,7 +654,7 @@ impl Parser {
         }
         let fix = if self.eat(P::Colon) {
             if let Tok::Ident(s) = self.peek() {
-                if s != "int" {
+                if *s != "int" {
                     return Err(Diag::error(self.pos(), "locals are int or fix; declare records at top level"));
                 }
             }
@@ -547,16 +674,17 @@ impl Parser {
         }
     }
 
-    fn if_stmt(&mut self) -> R<Stmt> {
+    fn if_stmt(&mut self) -> R<Stmt<'s>> {
         let pos = self.pos();
         self.expect_kw(Kw::If)?;
         self.expect(P::LParen)?;
         let cond = self.expr()?;
         self.expect(P::RParen)?;
         let then = self.block()?;
-        // `else` may follow on the same line or the next
-        let save = self.i;
-        self.skip_nl();
+        // `else` may follow on the same line or the next (newline runs are one token)
+        if *self.peek() == Tok::Nl && *self.peek_at(1) == Tok::Kw(Kw::Else) {
+            self.bump();
+        }
         let els = if self.eat_kw(Kw::Else) {
             if self.is_kw(Kw::If) {
                 Some(Box::new(Else::If(self.if_stmt()?)))
@@ -564,7 +692,6 @@ impl Parser {
                 Some(Box::new(Else::Block(self.block()?)))
             }
         } else {
-            self.i = save;
             None
         };
         Ok(Stmt {
@@ -574,7 +701,7 @@ impl Parser {
     }
 
     /// Assignment, increment or call.
-    fn simple_stmt(&mut self, allow_call: bool) -> R<StmtKind> {
+    fn simple_stmt(&mut self, allow_call: bool) -> R<StmtKind<'s>> {
         let pos = self.pos();
         let name = match self.peek() {
             Tok::Ident(_) => self.ident("a name")?,
@@ -621,7 +748,7 @@ impl Parser {
 
     // ---------- expressions ----------
 
-    fn args(&mut self) -> R<Vec<Expr>> {
+    fn args(&mut self) -> R<Vec<Expr<'s>>> {
         self.expect(P::LParen)?;
         let mut v = Vec::new();
         if !self.eat(P::RParen) {
@@ -633,10 +760,10 @@ impl Parser {
                 self.expect(P::Comma)?;
             }
         }
-        Ok(v)
+        Ok(fit(v))
     }
 
-    fn path_rest(&mut self, root: Name) -> R<Path> {
+    fn path_rest(&mut self, root: Name<'s>) -> R<Path<'s>> {
         let mut sels = Vec::new();
         loop {
             if self.eat(P::LBrack) {
@@ -645,12 +772,12 @@ impl Parser {
             } else if self.eat(P::Dot) {
                 sels.push(Sel::Field(self.ident("a field name")?));
             } else {
-                return Ok(Path { root, sels });
+                return Ok(Path { root, sels: fit(sels) });
             }
         }
     }
 
-    pub fn expr(&mut self) -> R<Expr> {
+    pub fn expr(&mut self) -> R<Expr<'s>> {
         let c = self.or()?;
         if self.eat(P::Question) {
             let a = self.expr()?;
@@ -665,7 +792,7 @@ impl Parser {
         Ok(c)
     }
 
-    fn or(&mut self) -> R<Expr> {
+    fn or(&mut self) -> R<Expr<'s>> {
         let (mut l, mut mixed) = self.and()?;
         let mut any_or = false;
         while self.is(P::OrOr) {
@@ -683,7 +810,7 @@ impl Parser {
     }
 
     /// Returns whether an unparenthesized `&&` appeared.
-    fn and(&mut self) -> R<(Expr, bool)> {
+    fn and(&mut self) -> R<(Expr<'s>, bool)> {
         let mut l = self.binary(0)?;
         let mut any = false;
         while self.is(P::AndAnd) {
@@ -696,7 +823,7 @@ impl Parser {
     }
 
     /// Levels from `|` (0) to `* / %` (7).
-    fn binary(&mut self, level: u8) -> R<Expr> {
+    fn binary(&mut self, level: u8) -> R<Expr<'s>> {
         if level > 7 {
             return self.unary();
         }
@@ -727,7 +854,7 @@ impl Parser {
         }
     }
 
-    fn unary(&mut self) -> R<Expr> {
+    fn unary(&mut self) -> R<Expr<'s>> {
         let pos = self.pos();
         let op = match self.peek() {
             Tok::P(P::Minus) => UnOp::Neg,
@@ -743,9 +870,9 @@ impl Parser {
         })
     }
 
-    fn primary(&mut self) -> R<Expr> {
+    fn primary(&mut self) -> R<Expr<'s>> {
         let pos = self.pos();
-        match self.peek().clone() {
+        match *self.peek() {
             Tok::Int(v) => {
                 self.bump();
                 Ok(Expr {
@@ -762,7 +889,7 @@ impl Parser {
             }
             Tok::Str(raw) => {
                 self.bump();
-                let parts = string_parts(&raw, pos)?;
+                let parts = string_parts(raw, pos)?;
                 Ok(Expr {
                     kind: ExprKind::Str(parts),
                     pos,
@@ -795,7 +922,7 @@ impl Parser {
     }
 }
 
-fn bin(op: BinOp, l: Expr, r: Expr, pos: Pos) -> Expr {
+fn bin<'s>(op: BinOp, l: Expr<'s>, r: Expr<'s>, pos: Pos) -> Expr<'s> {
     let _ = pos;
     let p = l.pos;
     Expr {
@@ -805,7 +932,7 @@ fn bin(op: BinOp, l: Expr, r: Expr, pos: Pos) -> Expr {
 }
 
 /// Splits a raw string literal into text and `{expr:format}` parts.
-fn string_parts(raw: &str, pos: Pos) -> R<Vec<StrPart>> {
+fn string_parts<'s>(raw: &'s str, pos: Pos) -> R<Vec<StrPart<'s>>> {
     let b = raw.as_bytes();
     let mut parts = Vec::new();
     let mut lit: Vec<u8> = Vec::new();
@@ -848,7 +975,7 @@ fn string_parts(raw: &str, pos: Pos) -> R<Vec<StrPart>> {
                 };
                 let inner = &raw[i + 1..end];
                 if !lit.is_empty() {
-                    parts.push(StrPart::Lit(core::mem::take(&mut lit)));
+                    parts.push(StrPart::Lit(fit(core::mem::take(&mut lit))));
                 }
                 parts.push(interp(inner, at(i + 1))?);
                 i = end + 1;
@@ -860,22 +987,18 @@ fn string_parts(raw: &str, pos: Pos) -> R<Vec<StrPart>> {
         }
     }
     if !lit.is_empty() || parts.is_empty() {
-        parts.push(StrPart::Lit(lit));
+        parts.push(StrPart::Lit(fit(lit)));
     }
     let len: usize = parts.iter().map(|p| if let StrPart::Lit(l) = p { l.len() } else { 0 }).sum();
     if len > 255 {
         return Err(Diag::error(pos, "string literals hold at most 255 characters"));
     }
-    Ok(parts)
+    Ok(fit(parts))
 }
 
-fn parse_fragment(s: &str, pos: Pos) -> R<Expr> {
-    let toks = Lexer::fragment(s, pos).tokenize()?;
-    let mut p = Parser {
-        toks,
-        i: 0,
-        warnings: Vec::new(),
-    };
+fn parse_fragment<'s>(s: &'s str, pos: Pos) -> R<Expr<'s>> {
+    Lexer::fragment(s, pos).check()?;
+    let mut p = Parser::new(Lexer::fragment(s, pos));
     let e = p.expr()?;
     if !p.at_eof() {
         return p.unexpected("'}'");
@@ -883,7 +1006,7 @@ fn parse_fragment(s: &str, pos: Pos) -> R<Expr> {
     Ok(e)
 }
 
-fn interp(inner: &str, pos: Pos) -> R<StrPart> {
+fn interp<'s>(inner: &'s str, pos: Pos) -> R<StrPart<'s>> {
     if inner.trim().is_empty() {
         return Err(Diag::error(pos, "empty '{}' in a string"));
     }

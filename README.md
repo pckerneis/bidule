@@ -84,7 +84,7 @@ npm test
 
 ## Known gaps
 
-- The Rust compiler doesn't meet the spec's 128 KB working-RAM budget yet (about 800 KB for the Sprite Editor). It doesn't compile constant `Sound` records in source, music or byte strings: in the page these are load errors.
+- The Rust compiler meets the spec's 128 KB working-RAM budget on the sample carts (about 60 KB for the Sprite Editor), but the spec doesn't set a maximum cart size yet, so there is no bound for every cart. It doesn't compile constant `Sound` records in source, music or byte strings: in the page these are load errors.
 - `readasset` and `writeasset` move raw bytes, so they expect `int` arrays: a `fix` array doesn't get the converted values the reference interpreter gave.
 - A running cart sees its assets as they were when it loaded. If an editor saves into the running cart, the changes show after a reset.
 - Switching carts ends the running cart's editing session: the system asks before dropping unsaved edits, but nothing keeps them. The write journal has no undo yet.

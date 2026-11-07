@@ -21,7 +21,7 @@ pub fn fdiv(a: i32, b: i32) -> Option<i32> {
     }
 }
 
-impl<'a> Compiler<'a> {
+impl<'p, 'a> Compiler<'p, 'a> {
     /// The value of an expression if it is known at compile time.
     pub fn const_eval(&mut self, e: &Expr) -> R<Option<(i32, Num)>> {
         Ok(match &e.kind {
@@ -57,7 +57,7 @@ impl<'a> Compiler<'a> {
                 Some((if pick.1 != t { pick.0.wrapping_shl(16) } else { pick.0 }, t))
             }
             ExprKind::Call(name, args) => {
-                let n = name.text.as_str();
+                let n = name.text;
                 if !matches!(n, "int" | "round" | "frac" | "abs" | "min" | "max") {
                     return Ok(None);
                 }
@@ -90,14 +90,14 @@ impl<'a> Compiler<'a> {
     }
 
     fn const_path(&mut self, p: &Path) -> R<Option<(i32, Num)>> {
-        let name = p.root.text.as_str();
+        let name = p.root.text;
         // locals shadow nothing (no shadowing), but a local may share no name with a constant
         if self.f.locals.iter().any(|l| l.name == name) {
             return Ok(None);
         }
         let sym = match self.const_sym(name)? {
             Some(s) => Some(s),
-            None => self.syms.get(name).cloned(),
+            None => self.sym(name).cloned(),
         };
         match (sym, p.sels.as_slice()) {
             (Some(Sym::Const(v, n)), []) => Ok(Some((v, n))),

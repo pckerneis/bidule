@@ -6,6 +6,14 @@
 //! ```text
 //! .bdcart source ─ lexer ─ parser ─ declarations ─ code generation ─ .bdb image
 //! ```
+//!
+//! To stay small, the syntax tree is never in memory as a whole. The parser
+//! checks the source and keeps, for each top-level item, its kind, name and
+//! position ([`ast::ItemAt`]); later passes parse an item again with
+//! [`parser::item_at`] when they need it, and read function bodies one
+//! statement at a time with [`parser::BodyReader`]. Names are slices of the
+//! source, and the syntax tree and symbol tables are freed before the image is
+//! written.
 #![no_std]
 
 extern crate alloc;
@@ -33,9 +41,23 @@ pub fn compile(source: &str, assets: &Assets, opts: &Options) -> Result<Output, 
         Ok(x) => x,
         Err(e) => return Err(alloc::vec![e]),
     };
-    let mut c = compile::Compiler::new(&prog, source.as_bytes(), assets, *opts);
-    let cart = c.run();
+    let mut c = compile::Compiler::new(&prog, source, assets, *opts);
+    let ok = c.run();
     diags.append(&mut c.diags);
+    let cart = if ok {
+        // free the syntax tree and the symbol tables before writing the image
+        let parts = c.into_parts();
+        drop(prog);
+        match parts.assemble() {
+            Ok(b) => Some(b),
+            Err(d) => {
+                diags.push(d);
+                None
+            }
+        }
+    } else {
+        None
+    };
     diags.sort_by_key(|d| (d.pos.line, d.pos.col));
     match cart {
         Some(cart) => Ok(Output { cart, warnings: diags }),

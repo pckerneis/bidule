@@ -315,7 +315,7 @@ Verification needs one byte of scratch per byte of the largest function (at most
 
 **Open**
 
-- The compiler does not meet the 128 KB working-RAM budget yet: compiling Sprite Editor (22 KB of source) peaks around 800 KB, because the whole syntax tree is kept in memory. Planned: compile one function at a time, borrow names from the source, and stream sections out.
+- The 128 KB working-RAM budget holds for the sample carts and for a 36 KB synthetic cart (Sprite Editor, 22 KB of source: about 60 KB). The compiler keeps one top-level item and one statement of syntax tree at a time; what grows with the cart is the symbol tables, the code, the line table and the finished image, which carries the source. So the budget only holds up to a cart size, which this spec doesn't set yet: it needs a maximum source size (or limits on declarations and code), and, for larger carts, writing the image out as it is made instead of keeping it in RAM.
 - Constant `Sound` records in source, the music format, and byte strings are not compiled yet.
 - `bidule-runtime`'s editing API covers `pickcart`, `savecart`, `requestwrite` and `status`; reading and writing assets of another cart (`opencart`, `cartcount`, `cartinfo`, `readasset`, `writeasset`) needs the platform's cart shelf. In the browser, `bidule-web` sends these built-ins to the page. A shared implementation for hardware is still to come.
 - `readasset` and `writeasset` exchange raw array elements. The VM doesn't track element types, so `fix` arrays don't get the converted values the spec's "one byte per array element" suggests. To decide: define these as `int` arrays only and have the compiler enforce it.
