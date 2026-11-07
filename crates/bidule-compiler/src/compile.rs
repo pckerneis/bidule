@@ -403,6 +403,10 @@ impl<'p, 'a> Compiler<'p, 'a> {
             }
         }
         for id in 0..self.records.len() {
+            // one that failed inside another has reported its error already
+            if self.records[id].state == RecState::Failed {
+                continue;
+            }
             if let Err(d) = self.resolve_record(id) {
                 self.error(d);
             }
@@ -436,9 +440,20 @@ impl<'p, 'a> Compiler<'p, 'a> {
         }
     }
 
+    /// Lays out a record's fields. A record that fails is marked so: its error
+    /// is reported once, and what uses it says so instead of failing on it.
     pub fn resolve_record(&mut self, id: RecId) -> R<()> {
+        let r = self.resolve_record_fields(id);
+        if r.is_err() {
+            self.records[id].state = RecState::Failed;
+        }
+        r
+    }
+
+    fn resolve_record_fields(&mut self, id: RecId) -> R<()> {
         match self.records[id].state {
             RecState::Done => return Ok(()),
+            RecState::Failed => return Err(self.broken_record(id, self.records[id].pos)),
             RecState::Resolving => {
                 return Err(Diag::error(
                     self.records[id].pos,
@@ -464,6 +479,9 @@ impl<'p, 'a> Compiler<'p, 'a> {
                 TypeName::Int => FieldTy::Num(Num::Int),
                 TypeName::Fix => FieldTy::Num(Num::Fix),
                 TypeName::Record(n) => match self.sym(n.text) {
+                    Some(Sym::Record(r)) if self.records[*r].state == RecState::Failed => {
+                        return Err(self.broken_record(*r, n.pos));
+                    }
                     Some(Sym::Record(r)) => FieldTy::Rec(*r),
                     _ => return Err(self.unknown("record type", n, &[])),
                 },
@@ -675,11 +693,18 @@ impl<'p, 'a> Compiler<'p, 'a> {
     }
 
     /// Element type and dimensions declared by a shape.
+    fn broken_record(&self, id: RecId, pos: Pos) -> Diag {
+        Diag::error(pos, format!("record {} has errors; fix them first", self.records[id].name))
+    }
+
     fn elem_of(&mut self, shape: &Shape<'a>) -> R<Elem> {
         Ok(match &shape.ty {
             TypeName::Int => Elem::Num(Num::Int),
             TypeName::Fix => Elem::Num(Num::Fix),
             TypeName::Record(n) => match self.sym(n.text) {
+                // records are all resolved before anything uses them: one that
+                // isn't failed, and has no fields to lay out
+                Some(Sym::Record(r)) if self.records[*r].state != RecState::Done => return Err(self.broken_record(*r, n.pos)),
                 Some(Sym::Record(r)) => Elem::Rec(*r),
                 _ => return Err(self.unknown("record type", n, &[])),
             },
@@ -871,7 +896,7 @@ impl<'p, 'a> Compiler<'p, 'a> {
                     first.get_or_insert(id);
                 }
                 Ok(ArrSym {
-                    id: first.unwrap(),
+                    id: first.ok_or_else(|| Diag::error(name.pos, "internal: a record without fields"))?,
                     rom: true,
                     elem,
                     dims: dims.into(),
@@ -1016,7 +1041,7 @@ impl<'p, 'a> Compiler<'p, 'a> {
                 self.claim(
                     name,
                     Sym::Arr(ArrSym {
-                        id: first.unwrap(),
+                        id: first.ok_or_else(|| Diag::error(name.pos, "internal: a record without fields"))?,
                         rom: false,
                         elem,
                         dims: dims.into(),
