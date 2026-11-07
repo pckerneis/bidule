@@ -67,6 +67,8 @@ pub enum RecState {
     Pending,
     Resolving,
     Done,
+    /// Resolving it reported an error: it has no layout.
+    Failed,
 }
 
 #[derive(Clone, Debug)]

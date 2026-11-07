@@ -350,3 +350,32 @@ fn compile_errors() {
     assert!(errors("init() {\n  var x = 1\n  var x = 2\n}").contains("already"));
     assert!(errors("init() { print(\"{1:q}\", 0, 0) }").contains("format"));
 }
+
+/// A record whose fields fail used to crash the compiler wherever it was used.
+#[test]
+fn broken_records() {
+    for src in [
+        "record R {}\nvar r: R",
+        "record R {}\nvar rs: R[4]",
+        "record R {}\nconst T: R[] = { {} }",
+        "record R {}\nfn f(r: R) {}",
+        "record R { p: Nope }\nvar r: R",
+    ] {
+        let e = errors(src);
+        assert!(e.contains("record R has errors"), "{}: {}", src, e);
+    }
+    // a record that contains a failed one says so, and is not "contained in itself"
+    for src in [
+        "record B {}\nrecord A { b: B }\nvar a: A",
+        "record A { b: B }\nrecord B {}\nvar a: A",
+    ] {
+        let e = errors(src);
+        assert!(
+            e.contains("at least one field") && e.contains("record A has errors"),
+            "{}: {}",
+            src,
+            e
+        );
+        assert!(!e.contains("itself"), "{}: {}", src, e);
+    }
+}
