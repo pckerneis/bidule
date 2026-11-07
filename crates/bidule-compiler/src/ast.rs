@@ -295,13 +295,15 @@ pub enum Item<'s> {
         name: Name<'s>,
         params: Vec<Param<'s>>,
         ret_fix: bool,
-        body: Block<'s>,
+        /// Position of the body's `{`: see [`crate::parser::parse_body`].
+        body: Pos,
     },
     Handler {
         kind: HandlerKind,
         pos: Pos,
         params: Vec<Param<'s>>,
-        body: Block<'s>,
+        /// Position of the body's `{`: see [`crate::parser::parse_body`].
+        body: Pos,
     },
 }
 

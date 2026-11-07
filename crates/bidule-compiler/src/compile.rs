@@ -96,9 +96,9 @@ enum ConstState {
     Done,
 }
 
-pub struct Compiler<'a> {
-    pub prog: &'a Program<'a>,
-    pub source: &'a [u8],
+pub struct Compiler<'p, 'a> {
+    pub prog: &'p Program<'a>,
+    pub source: &'a str,
     pub opts: Options,
     pub diags: Vec<Diag>,
     pub syms: BTreeMap<&'a str, Sym>,
@@ -126,8 +126,105 @@ pub struct Compiler<'a> {
     pub f: FnState<'a>,
 }
 
-impl<'a> Compiler<'a> {
-    pub fn new(prog: &'a Program<'a>, source: &'a [u8], assets: &Assets<'a>, opts: Options) -> Self {
+/// A compiled program waiting to be written out as a `.bdb` image.
+pub struct Parts<'a> {
+    source: &'a str,
+    opts: Options,
+    raw_assets: Assets<'a>,
+    meta: Vec<(&'a str, &'a str)>,
+    globals: Vec<i32>,
+    audio_vars: Vec<i32>,
+    arrays: Vec<ArrayInfo>,
+    array_names: Vec<String>,
+    tables: Vec<write::Table>,
+    templates: Vec<Vec<u8>>,
+    code: Vec<u8>,
+    lines: Vec<(u32, u16, u16)>,
+    fn_entries: Vec<write::FnEntry>,
+    fn_names: Vec<&'a str>,
+    handlers: [u16; 4],
+}
+
+impl<'a> Parts<'a> {
+    /// The image. Sections are written straight into it, the source and the
+    /// asset sections included, without intermediate copies.
+    pub fn assemble(self) -> R<Vec<u8>> {
+        let (has_rom, has_text) = (!self.tables.is_empty(), !self.templates.is_empty());
+        let rom = write::rom(&self.tables);
+        drop(self.tables);
+        let text = write::templates(&self.templates);
+        drop(self.templates);
+        let tables = write::ProgramTables {
+            globals: &self.globals,
+            audio_vars: &self.audio_vars,
+            arrays: &self.arrays,
+            functions: &self.fn_entries,
+            handlers: self.handlers,
+        };
+        let mut program = write::program(&tables);
+        {
+            // the stack depth the verifier computes is the one we declare
+            let rom_v = image::Rom::from_bytes(&rom).map_err(|e| Diag::error(Pos::default(), format!("internal: {}", e)))?;
+            let text_v = image::Templates::from_bytes(&text).map_err(|e| Diag::error(Pos::default(), format!("internal: {}", e)))?;
+            let p = image::Program::parse(&program, &self.code, rom_v, text_v, None)
+                .map_err(|e| Diag::error(Pos::default(), format!("internal: {}", e)))?;
+            let mut scratch = vec![0u8; limits::FN_CODE_BYTES];
+            let mut maxes = Vec::with_capacity(p.functions as usize);
+            for f in 0..p.functions {
+                match verify::max_stack(&p, f, &mut scratch) {
+                    Ok(m) => maxes.push(m),
+                    Err(e) => {
+                        let name = self.fn_names.get(f as usize).copied().unwrap_or("?");
+                        return Err(Diag::error(Pos::default(), format!("internal compiler error in {}: {}", name, e)));
+                    }
+                }
+            }
+            let base = image::PROGRAM_HEADER + (self.globals.len() + self.audio_vars.len()) * 4 + self.arrays.len() * image::ARRAY_ENTRY;
+            for (i, m) in maxes.into_iter().enumerate() {
+                program[base + i * image::FN_ENTRY + 6] = m;
+            }
+        }
+        let meta = write::meta(&self.meta);
+        let debug = if self.opts.debug_info {
+            let mut names: Vec<&[u8]> = self.array_names.iter().map(|s| s.as_bytes()).collect();
+            names.extend(self.fn_names.iter().map(|s| s.as_bytes()));
+            Some(write::debug(&names, &self.lines))
+        } else {
+            None
+        };
+        drop(self.lines);
+        let mut secs: Vec<(u16, &[u8])> = Vec::with_capacity(12);
+        secs.push((section::META, &meta));
+        secs.push((section::PROGRAM, &program));
+        secs.push((section::CODE, &self.code));
+        if has_rom {
+            secs.push((section::ROM, &rom));
+        }
+        if has_text {
+            secs.push((section::TEXT, &text));
+        }
+        if let Some(d) = &debug {
+            secs.push((section::DEBUG, d));
+        }
+        secs.push((section::SOURCE, self.source.as_bytes()));
+        let raw = self.raw_assets;
+        for (b, k) in [
+            (raw.sprites, section::SPRITES),
+            (raw.maps, section::MAPS),
+            (raw.sounds, section::SOUNDS),
+            (raw.music, section::MUSIC),
+            (raw.palette, section::PALETTE),
+        ] {
+            if let Some(b) = b {
+                secs.push((k, b));
+            }
+        }
+        Ok(write::cart(COMPILER_VERSION, &mut secs))
+    }
+}
+
+impl<'p, 'a> Compiler<'p, 'a> {
+    pub fn new(prog: &'p Program<'a>, source: &'a str, assets: &Assets<'a>, opts: Options) -> Self {
         Compiler {
             prog,
             source,
@@ -168,7 +265,7 @@ impl<'a> Compiler<'a> {
 
     // ---------- names ----------
 
-    fn claim(&mut self, name: &'a Name<'a>, sym: Sym) -> R<()> {
+    fn claim(&mut self, name: &'p Name<'a>, sym: Sym) -> R<()> {
         let n = name.text;
         if BUILTIN_CONSTS.iter().any(|c| c.0 == n) {
             return Err(Diag::error(name.pos, format!("'{}' is a built-in constant; pick another name", n)));
@@ -203,25 +300,40 @@ impl<'a> Compiler<'a> {
 
     // ---------- the whole program ----------
 
-    pub fn run(&mut self) -> Option<Vec<u8>> {
+    /// Everything up to code generation. False if there were errors: then
+    /// there is nothing to assemble.
+    pub fn run(&mut self) -> bool {
         self.load_assets();
         self.declare_types();
         self.declare_values();
         self.analyse_writes();
         self.gen_functions();
-        if self.diags.iter().any(|d| d.is_error()) {
-            return None;
-        }
-        match self.assemble() {
-            Ok(b) => Some(b),
-            Err(d) => {
-                self.error(d);
-                None
-            }
+        !self.diags.iter().any(|d| d.is_error())
+    }
+
+    /// What assembling the image needs, so the syntax tree and the symbol
+    /// tables can be freed first.
+    pub fn into_parts(self) -> Parts<'a> {
+        Parts {
+            source: self.source,
+            opts: self.opts,
+            raw_assets: self.raw_assets,
+            meta: self.prog.meta.iter().map(|(k, v, _)| (*k, *v)).collect(),
+            globals: self.globals,
+            audio_vars: self.audio_vars,
+            arrays: self.arrays,
+            array_names: self.array_names,
+            tables: self.tables,
+            templates: self.templates,
+            code: self.code,
+            lines: self.lines,
+            fn_entries: self.fn_entries,
+            fn_names: self.fn_names,
+            handlers: self.handlers,
         }
     }
 
-    fn load_assets(&mut self) {
+    pub fn load_assets(&mut self) {
         let raw = self.raw_assets;
         let secs = [
             (raw.sprites, section::SPRITES),
@@ -249,7 +361,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// Records and enums first: other declarations refer to them.
-    fn declare_types(&mut self) {
+    pub fn declare_types(&mut self) {
         let prog = self.prog;
         for (i, item) in prog.items.iter().enumerate() {
             match item {
@@ -426,7 +538,7 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn declare_const(&mut self, name: &'a Name<'a>, shape: &'a Shape<'a>, init: &'a Init<'a>) -> R<()> {
+    fn declare_const(&mut self, name: &'p Name<'a>, shape: &'p Shape<'a>, init: &'p Init<'a>) -> R<()> {
         // a table: brackets, a record type, or text
         let is_text = matches!(init, Init::Expr(e) if matches!(e.kind, ExprKind::Str(_)));
         if !shape.dims.is_empty() || matches!(shape.ty, TypeName::Record(_)) || is_text || matches!(init, Init::List(..)) {
@@ -668,7 +780,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn const_table(&mut self, name: &'a Name<'a>, shape: &'a Shape<'a>, init: &'a Init<'a>) -> R<ArrSym> {
+    fn const_table(&mut self, name: &'p Name<'a>, shape: &'p Shape<'a>, init: &'p Init<'a>) -> R<ArrSym> {
         let elem = self.elem_of(shape)?;
         let is_text = matches!(init, Init::Expr(e) if matches!(e.kind, ExprKind::Str(_)));
         let mut dims = self.dims_of(&shape.dims, name.pos, true)?;
@@ -741,7 +853,7 @@ impl<'a> Compiler<'a> {
 
     // ---------- globals, functions, sprites, audio vars ----------
 
-    fn declare_values(&mut self) {
+    pub fn declare_values(&mut self) {
         let prog = self.prog;
         // constants (lazily, so order doesn't matter)
         for item in prog.items.iter() {
@@ -765,7 +877,7 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn declare_var(&mut self, name: &'a Name<'a>, shape: &'a Shape<'a>, init: Option<&'a Init<'a>>) -> R<()> {
+    fn declare_var(&mut self, name: &'p Name<'a>, shape: &'p Shape<'a>, init: Option<&'p Init<'a>>) -> R<()> {
         let elem = self.elem_of(shape)?;
         let text = init.and_then(|i| match i {
             Init::Expr(e) => e.plain_str(),
@@ -881,7 +993,7 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn declare_audio_var(&mut self, name: &'a Name<'a>, fix: bool, init: &'a Expr<'a>) -> R<()> {
+    fn declare_audio_var(&mut self, name: &'p Name<'a>, fix: bool, init: &'p Expr<'a>) -> R<()> {
         let num = if fix { Num::Fix } else { Num::Int };
         let (v, n) = self
             .const_eval(init)?
@@ -897,7 +1009,7 @@ impl<'a> Compiler<'a> {
         self.claim(name, Sym::Audio(self.audio_vars.len() as u8 - 1, num))
     }
 
-    fn declare_sprite(&mut self, name: &'a Name<'a>, tile: &Expr<'a>, size: Option<&(Expr<'a>, Expr<'a>)>) -> R<()> {
+    fn declare_sprite(&mut self, name: &'p Name<'a>, tile: &Expr<'a>, size: Option<&(Expr<'a>, Expr<'a>)>) -> R<()> {
         let t = self.const_int(tile)?;
         let (w, h) = match size {
             Some((w, h)) => (self.const_int(w)?, self.const_int(h)?),
@@ -913,7 +1025,7 @@ impl<'a> Compiler<'a> {
         self.claim(name, Sym::Const(sprite_value(t, w, h), Num::Int))
     }
 
-    fn declare_fn(&mut self, item: usize, name: &'a Name<'a>, params: &'a [Param<'a>], ret_fix: bool) -> R<()> {
+    fn declare_fn(&mut self, item: usize, name: &'p Name<'a>, params: &'p [Param<'a>], ret_fix: bool) -> R<()> {
         if self.funcs.len() >= limits::FUNCTIONS - 4 {
             return Err(Diag::error(name.pos, "too many functions"));
         }
@@ -955,73 +1067,6 @@ impl<'a> Compiler<'a> {
             (Elem::Rec(r), 0) => ParamKind::Rec(r),
             (Elem::Rec(r), _) => ParamKind::RecArr(r),
         })
-    }
-
-    // ---------- output ----------
-
-    fn assemble(&mut self) -> R<Vec<u8>> {
-        // the stack depth the verifier computes is the one we declare
-        let rom = write::rom(&self.tables);
-        let text = write::templates(&self.templates);
-        let tables = write::ProgramTables {
-            globals: &self.globals,
-            audio_vars: &self.audio_vars,
-            arrays: &self.arrays,
-            functions: &self.fn_entries,
-            handlers: self.handlers,
-        };
-        let mut program = write::program(&tables);
-        {
-            let rom_v = image::Rom::from_bytes(&rom).map_err(|e| Diag::error(Pos::default(), format!("internal: {}", e)))?;
-            let text_v = image::Templates::from_bytes(&text).map_err(|e| Diag::error(Pos::default(), format!("internal: {}", e)))?;
-            let p = image::Program::parse(&program, &self.code, rom_v, text_v, None)
-                .map_err(|e| Diag::error(Pos::default(), format!("internal: {}", e)))?;
-            let mut scratch = vec![0u8; limits::FN_CODE_BYTES];
-            let mut maxes = Vec::new();
-            for f in 0..p.functions {
-                match verify::max_stack(&p, f, &mut scratch) {
-                    Ok(m) => maxes.push(m),
-                    Err(e) => {
-                        let name = self.fn_names.get(f as usize).copied().unwrap_or("?");
-                        return Err(Diag::error(Pos::default(), format!("internal compiler error in {}: {}", name, e)));
-                    }
-                }
-            }
-            let base = image::PROGRAM_HEADER + (self.globals.len() + self.audio_vars.len()) * 4 + self.arrays.len() * image::ARRAY_ENTRY;
-            for (i, m) in maxes.into_iter().enumerate() {
-                program[base + i * image::FN_ENTRY + 6] = m;
-            }
-        }
-        let mut secs: Vec<(u16, Vec<u8>)> = Vec::new();
-        let meta: Vec<(&str, &str)> = self.prog.meta.iter().map(|(k, v, _)| (*k, *v)).collect();
-        secs.push((section::META, write::meta(&meta)));
-        secs.push((section::PROGRAM, program));
-        secs.push((section::CODE, core::mem::take(&mut self.code)));
-        if !self.tables.is_empty() {
-            secs.push((section::ROM, rom));
-        }
-        if !self.templates.is_empty() {
-            secs.push((section::TEXT, text));
-        }
-        if self.opts.debug_info {
-            let mut names: Vec<&[u8]> = self.array_names.iter().map(|s| s.as_bytes()).collect();
-            names.extend(self.fn_names.iter().map(|s| s.as_bytes()));
-            secs.push((section::DEBUG, write::debug(&names, &self.lines)));
-        }
-        secs.push((section::SOURCE, Vec::from(self.source)));
-        let raw = self.raw_assets;
-        for (b, k) in [
-            (raw.sprites, section::SPRITES),
-            (raw.maps, section::MAPS),
-            (raw.sounds, section::SOUNDS),
-            (raw.music, section::MUSIC),
-            (raw.palette, section::PALETTE),
-        ] {
-            if let Some(b) = b {
-                secs.push((k, Vec::from(b)));
-            }
-        }
-        Ok(write::cart(COMPILER_VERSION, &mut secs))
     }
 
     pub fn handler_slot(k: HandlerKind) -> Handler {

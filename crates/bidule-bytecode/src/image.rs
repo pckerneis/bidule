@@ -778,9 +778,14 @@ pub mod write {
     }
 
     /// Assembles a cart from `(kind, bytes)` sections (any order; sorted here).
-    pub fn cart(compiler_version: u16, sections: &mut [(u16, Vec<u8>)]) -> Vec<u8> {
+    pub fn cart<D: AsRef<[u8]>>(compiler_version: u16, sections: &mut [(u16, D)]) -> Vec<u8> {
         sections.sort_by_key(|s| s.0);
-        let mut out = Vec::new();
+        let size = sections
+            .iter()
+            .fold(align4(HEADER_SIZE + sections.len() * DIR_ENTRY_SIZE), |off, (_, d)| {
+                align4(off + d.as_ref().len())
+            });
+        let mut out = Vec::with_capacity(size);
         out.extend_from_slice(&MAGIC);
         put_u16(&mut out, FORMAT_VERSION);
         put_u16(&mut out, 0);
@@ -794,15 +799,15 @@ pub mod write {
             put_u16(&mut out, *kind);
             put_u16(&mut out, 0);
             put_u32(&mut out, off as u32);
-            put_u32(&mut out, data.len() as u32);
-            off = align4(off + data.len());
+            put_u32(&mut out, data.as_ref().len() as u32);
+            off = align4(off + data.as_ref().len());
         }
         let last = sections.len().saturating_sub(1);
         for (i, (_, data)) in sections.iter().enumerate() {
             while out.len() % 4 != 0 {
                 out.push(0);
             }
-            out.extend_from_slice(data);
+            out.extend_from_slice(data.as_ref());
             if i == last {
                 while out.len() % 4 != 0 {
                     out.push(0);

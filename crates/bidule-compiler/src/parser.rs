@@ -40,6 +40,13 @@ pub fn parse<'s>(src: &'s str) -> Result<(Program<'s>, Vec<Diag>), Diag> {
     Ok((prog, p.warnings))
 }
 
+/// Parses a function or handler body again, from the position of its `{`
+/// that [`parse`] recorded. `src` is the source given to [`parse`].
+pub fn parse_body<'s>(src: &'s str, at: Pos) -> R<Block<'s>> {
+    let mut p = Parser::new(Lexer::at(src, at));
+    p.block()
+}
+
 /// `// @key value` lines before the first declaration.
 fn metadata<'s>(src: &'s str, warnings: &mut Vec<Diag>) -> Vec<(&'s str, &'s str, Pos)> {
     let mut out = Vec::new();
@@ -268,7 +275,7 @@ impl<'s> Parser<'s> {
                 let name = self.ident("a function name")?;
                 let params = self.params()?;
                 let ret_fix = if self.eat(P::Colon) { self.scalar_type()? } else { false };
-                let body = self.block()?;
+                let body = self.skim_block()?;
                 Ok(Item::Fn {
                     name,
                     params,
@@ -288,6 +295,15 @@ impl<'s> Parser<'s> {
         }
     }
 
+    /// A function or handler body: parsed to report syntax errors in order,
+    /// then dropped. The compiler parses it again with [`parse_body`] when it
+    /// needs it, so only one function's syntax tree is in memory at a time.
+    fn skim_block(&mut self) -> R<Pos> {
+        let pos = self.pos();
+        self.block()?;
+        Ok(pos)
+    }
+
     /// Comma- or newline-separated items up to the closing brace (already past '{').
     fn list_body(&mut self, mut each: impl FnMut(&mut Self) -> R<()>) -> R<()> {
         self.skip_nl();
@@ -305,7 +321,7 @@ impl<'s> Parser<'s> {
 
     fn handler(&mut self, kind: HandlerKind, pos: Pos) -> R<Item<'s>> {
         let params = self.params()?;
-        let body = self.block()?;
+        let body = self.skim_block()?;
         Ok(Item::Handler { kind, pos, params, body })
     }
 

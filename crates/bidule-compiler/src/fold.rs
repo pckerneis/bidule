@@ -21,7 +21,7 @@ pub fn fdiv(a: i32, b: i32) -> Option<i32> {
     }
 }
 
-impl<'a> Compiler<'a> {
+impl<'p, 'a> Compiler<'p, 'a> {
     /// The value of an expression if it is known at compile time.
     pub fn const_eval(&mut self, e: &Expr) -> R<Option<(i32, Num)>> {
         Ok(match &e.kind {

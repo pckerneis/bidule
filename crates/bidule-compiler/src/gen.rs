@@ -14,6 +14,7 @@ use bidule_bytecode::{limits, Op};
 use crate::ast::*;
 use crate::compile::{Compiler, ASSET_PREFIXES, BUILTIN_CONSTS, INTRINSICS, R};
 use crate::diag::{Diag, Pos};
+use crate::parser;
 use crate::types::*;
 
 // ---------- per-function state ----------
@@ -66,8 +67,8 @@ pub enum Base {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct Term<'e> {
-    e: &'e Expr<'e>,
+pub struct Term<'e, 's> {
+    e: &'e Expr<'s>,
     stride: u32,
     bound: Option<u32>,
 }
@@ -84,10 +85,10 @@ pub enum Shape {
 /// and an index made of `terms` (plus the record-reference index times `scale`),
 /// counted in units of the current shape's elements.
 #[derive(Clone, Debug)]
-pub struct View<'e> {
+pub struct View<'e, 's> {
     base: Base,
     leaf: u16,
-    terms: Vec<Term<'e>>,
+    terms: Vec<Term<'e, 's>>,
     scale: u32,
     shape: Shape,
     in_array_field: bool,
@@ -95,16 +96,16 @@ pub struct View<'e> {
 }
 
 #[derive(Clone, Debug)]
-pub enum Res<'e> {
+pub enum Res<'e, 's> {
     Const(i32, Num),
     Local(u8, Num),
     Global(u8, Num),
     Audio(u8, Num),
-    View(View<'e>),
+    View(View<'e, 's>),
     Map(u16),
-    MapRow(u16, &'e Expr<'e>),
-    MapCell(u16, &'e Expr<'e>, &'e Expr<'e>),
-    DynLen(View<'e>),
+    MapRow(u16, &'e Expr<'s>),
+    MapCell(u16, &'e Expr<'s>, &'e Expr<'s>),
+    DynLen(View<'e, 's>),
 }
 
 /// What an element address left on the stack.
@@ -130,7 +131,7 @@ pub enum ETy {
     Map,
 }
 
-impl<'a> Compiler<'a> {
+impl<'p, 'a> Compiler<'p, 'a> {
     // ---------- emission primitives ----------
 
     fn pc(&self) -> usize {
@@ -230,7 +231,7 @@ impl<'a> Compiler<'a> {
         self.f.locals.iter().rev().find(|l| l.name == name)
     }
 
-    fn declare_local(&mut self, name: &'a Name<'a>, kind: LocalKind, slot: u8) -> R<()> {
+    fn declare_local(&mut self, name: &Name<'a>, kind: LocalKind, slot: u8) -> R<()> {
         let n = name.text;
         if self.find_local(n).is_some() {
             return Err(Diag::error(name.pos, format!("'{}' is already a local here; pick another name", n)));
@@ -290,7 +291,10 @@ impl<'a> Compiler<'a> {
                     let Some(Sym::Func(id)) = self.syms.get(name.text).cloned() else {
                         continue;
                     };
-                    self.gen_fn(Some(id), &name.text, None, params, body);
+                    let Ok(body) = parser::parse_body(self.source, *body) else {
+                        continue;
+                    };
+                    self.gen_fn(Some(id), name.text, None, params, &body);
                 }
                 Item::Handler { kind, pos, params, body } => {
                     let max = Self::handler_slot(*kind).max_params();
@@ -305,14 +309,17 @@ impl<'a> Compiler<'a> {
                         HandlerKind::Draw => "draw",
                         HandlerKind::Audio => "audio",
                     };
-                    self.gen_fn(None, name, Some(*kind), params, body);
+                    let Ok(body) = parser::parse_body(self.source, *body) else {
+                        continue;
+                    };
+                    self.gen_fn(None, name, Some(*kind), params, &body);
                 }
                 _ => {}
             }
         }
     }
 
-    fn gen_fn(&mut self, id: Option<usize>, name: &'a str, handler: Option<HandlerKind>, params: &'a [Param<'a>], body: &'a Block<'a>) {
+    fn gen_fn<'b>(&mut self, id: Option<usize>, name: &'a str, handler: Option<HandlerKind>, params: &'b [Param<'a>], body: &'b Block<'a>) {
         let start = self.pc() as u32;
         self.f = FnState {
             name,
@@ -379,7 +386,7 @@ impl<'a> Compiler<'a> {
 
     // ---------- statements ----------
 
-    fn block(&mut self, b: &'a Block<'a>) {
+    fn block<'b>(&mut self, b: &'b Block<'a>) {
         let save_locals = self.f.locals.len();
         let save_slot = self.f.next_slot;
         for s in &b.stmts {
@@ -398,7 +405,7 @@ impl<'a> Compiler<'a> {
         self.f.next_slot = save_slot;
     }
 
-    fn stmt(&mut self, s: &'a Stmt<'a>) -> R<()> {
+    fn stmt<'b>(&mut self, s: &'b Stmt<'a>) -> R<()> {
         self.mark(s.pos);
         match &s.kind {
             StmtKind::Var { name, fix, init } => {
@@ -536,12 +543,18 @@ impl<'a> Compiler<'a> {
     }
 
     /// A condition: any number (fix compares to 0 like int).
-    fn cond(&mut self, e: &'a Expr<'a>) -> R<()> {
+    fn cond<'b>(&mut self, e: &'b Expr<'a>) -> R<()> {
         self.expr(e)?;
         Ok(())
     }
 
-    fn switch(&mut self, value: &'a Expr<'a>, cases: &'a [(Vec<Expr<'a>>, Block<'a>)], default: Option<&'a Block<'a>>, pos: Pos) -> R<()> {
+    fn switch<'b>(
+        &mut self,
+        value: &'b Expr<'a>,
+        cases: &'b [(Vec<Expr<'a>>, Block<'a>)],
+        default: Option<&'b Block<'a>>,
+        pos: Pos,
+    ) -> R<()> {
         let t = self.expr(value)?;
         let tmp = self.alloc_local(1, pos)?;
         self.op_u8(Op::LOCAL_STORE, tmp);
@@ -639,7 +652,7 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn assign(&mut self, target: &'a Path<'a>, op: AssignOp, value: &'a Expr<'a>, pos: Pos) -> R<()> {
+    fn assign<'b>(&mut self, target: &'b Path<'a>, op: AssignOp, value: &'b Expr<'a>, pos: Pos) -> R<()> {
         let r = self.resolve(target)?;
         self.check_scalar_store(&r, target.root.pos)?;
         if let Res::View(v) = &r {
@@ -682,7 +695,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// Converts the value on the stack (of type `t`) for a store of type `want`.
-    fn store_conv(&mut self, t: Num, want: Num, value: &'a Expr<'a>) -> R<()> {
+    fn store_conv<'b>(&mut self, t: Num, want: Num, value: &'b Expr<'a>) -> R<()> {
         if t == Num::Fix && want == Num::Int {
             return Err(Diag::error(
                 value.pos,
@@ -697,7 +710,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// Warns when `int / int` lands in a fix: the division truncates first.
-    pub fn check_int_div(&mut self, e: &'a Expr<'a>, want: Num) {
+    pub fn check_int_div<'b>(&mut self, e: &'b Expr<'a>, want: Num) {
         if want != Num::Fix {
             return;
         }
@@ -716,7 +729,7 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn incdec(&mut self, target: &'a Path<'a>, inc: bool, pos: Pos) -> R<()> {
+    fn incdec<'b>(&mut self, target: &'b Path<'a>, inc: bool, pos: Pos) -> R<()> {
         let r = self.resolve(target)?;
         self.check_scalar_store(&r, target.root.pos)?;
         if let Res::View(v) = &r {
@@ -767,7 +780,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// Emits the address of a numeric place.
-    fn address(&mut self, r: &Res<'a>, pos: Pos) -> R<(Slot, Num)> {
+    fn address<'b>(&mut self, r: &Res<'b, 'a>, pos: Pos) -> R<(Slot, Num)> {
         match r {
             Res::Local(s, n) => Ok((Slot::Local(*s), *n)),
             Res::Global(s, n) => Ok((Slot::Global(*s), *n)),
@@ -786,7 +799,7 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn record_copy(&mut self, dst: View<'a>, rec: RecId, value: &'a Expr<'a>, pos: Pos) -> R<()> {
+    fn record_copy<'b>(&mut self, dst: View<'b, 'a>, rec: RecId, value: &'b Expr<'a>, pos: Pos) -> R<()> {
         let ExprKind::Path(p) = &value.kind else {
             return Err(Diag::error(value.pos, format!("expected a {} to copy", self.records[rec].name)));
         };
@@ -826,9 +839,9 @@ impl<'a> Compiler<'a> {
 
     // ---------- resolving names ----------
 
-    pub fn resolve(&mut self, p: &'a Path<'a>) -> R<Res<'a>> {
+    pub fn resolve<'b>(&mut self, p: &'b Path<'a>) -> R<Res<'b, 'a>> {
         let name = p.root.text;
-        let mut cur: Res<'a> = if let Some(l) = self.find_local(name).cloned() {
+        let mut cur: Res<'b, 'a> = if let Some(l) = self.find_local(name).cloned() {
             match l.kind {
                 LocalKind::Num(n) => Res::Local(l.slot, n),
                 LocalKind::Arr(n) => Res::View(View {
@@ -927,7 +940,7 @@ impl<'a> Compiler<'a> {
         Ok(cur)
     }
 
-    fn finish_const(&self, p: &'a Path<'a>, used: usize, v: i32) -> R<Res<'a>> {
+    fn finish_const<'b>(&self, p: &'b Path<'a>, used: usize, v: i32) -> R<Res<'b, 'a>> {
         if let Some(s) = p.sels.get(used) {
             let pos = match s {
                 Sel::Index(e) => e.pos,
@@ -938,7 +951,7 @@ impl<'a> Compiler<'a> {
         Ok(Res::Const(v, Num::Int))
     }
 
-    fn resolve_asset(&mut self, p: &'a Path<'a>, k: usize) -> R<Res<'a>> {
+    fn resolve_asset<'b>(&mut self, p: &'b Path<'a>, k: usize) -> R<Res<'b, 'a>> {
         let prefix = ASSET_PREFIXES[k];
         let Some(Sel::Field(n)) = p.sels.first() else {
             return Err(Diag::error(p.root.pos, format!("name an asset: {}.NAME", prefix)));
@@ -979,7 +992,7 @@ impl<'a> Compiler<'a> {
         Ok(cur)
     }
 
-    fn select(&mut self, cur: Res<'a>, sel: &'a Sel<'a>, last: bool) -> R<Res<'a>> {
+    fn select<'b>(&mut self, cur: Res<'b, 'a>, sel: &'b Sel<'a>, last: bool) -> R<Res<'b, 'a>> {
         match (cur, sel) {
             (Res::Map(m), Sel::Index(e)) => Ok(Res::MapRow(m, e)),
             (Res::MapRow(m, y), Sel::Index(e)) => Ok(Res::MapCell(m, y, e)),
@@ -1079,7 +1092,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// Pushes the flat index (in current units) of a view.
-    fn emit_index(&mut self, v: &View<'a>, div: u32) -> R<()> {
+    fn emit_index<'b>(&mut self, v: &View<'b, 'a>, div: u32) -> R<()> {
         let parts = v.terms.len() + (v.scale > 0) as usize;
         let check = parts > 1;
         let mut first = true;
@@ -1112,7 +1125,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// Pushes the handle of a view's base array plus its leaf.
-    fn emit_base_handle(&mut self, v: &View<'a>) {
+    fn emit_base_handle<'b>(&mut self, v: &View<'b, 'a>) {
         match v.base {
             Base::Pool(id) => self.op_u8(Op::PUSH_ARR, (id + v.leaf) as u8),
             Base::Rom(id) => self.op_u16(Op::PUSH_ROM, id + v.leaf),
@@ -1123,7 +1136,7 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn elem_addr(&mut self, v: &View<'a>) -> R<Slot> {
+    fn elem_addr<'b>(&mut self, v: &View<'b, 'a>) -> R<Slot> {
         match v.base {
             Base::Pool(id) | Base::Rom(id) => {
                 let rom = matches!(v.base, Base::Rom(_));
@@ -1146,7 +1159,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// Pushes a handle to a one-dimensional array view (a whole 1D array or a row).
-    fn arr_handle(&mut self, v: &View<'a>, pos: Pos) -> R<()> {
+    fn arr_handle<'b>(&mut self, v: &View<'b, 'a>, pos: Pos) -> R<()> {
         let Shape::Arr(Elem::Num(_), dims) = &v.shape else {
             return Err(Diag::error(pos, format!("'{}' is not an array of numbers", v.name)));
         };
@@ -1184,7 +1197,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// Pushes (handle, index) for a record view.
-    fn rec_ref(&mut self, v: &View<'a>) -> R<()> {
+    fn rec_ref<'b>(&mut self, v: &View<'b, 'a>) -> R<()> {
         let Shape::Rec(r) = v.shape else { unreachable!() };
         if v.in_array_field && self.records[r].has_array_leaf() {
             return Err(Diag::error(
@@ -1202,7 +1215,7 @@ impl<'a> Compiler<'a> {
 
     // ---------- types ----------
 
-    pub fn ty(&mut self, e: &'a Expr<'a>) -> R<ETy> {
+    pub fn ty<'b>(&mut self, e: &'b Expr<'a>) -> R<ETy> {
         Ok(match &e.kind {
             ExprKind::Int(_) => ETy::Num(Num::Int),
             ExprKind::Fix(_) => ETy::Num(Num::Fix),
@@ -1236,7 +1249,7 @@ impl<'a> Compiler<'a> {
         })
     }
 
-    fn num_ty(&mut self, e: &'a Expr<'a>) -> R<Num> {
+    fn num_ty<'b>(&mut self, e: &'b Expr<'a>) -> R<Num> {
         match self.ty(e)? {
             ETy::Num(n) => Ok(n),
             other => Err(self.not_a_number(e, &other)),
@@ -1259,7 +1272,7 @@ impl<'a> Compiler<'a> {
         Diag::error(e.pos, format!("expected a number, found {}{}", what, hint))
     }
 
-    fn call_type(&mut self, name: &'a Name<'a>, args: &'a [Expr<'a>]) -> R<Num> {
+    fn call_type<'b>(&mut self, name: &'b Name<'a>, args: &'b [Expr<'a>]) -> R<Num> {
         let n = name.text;
         match n {
             "int" | "round" => return Ok(Num::Int),
@@ -1288,13 +1301,13 @@ impl<'a> Compiler<'a> {
     // ---------- expressions ----------
 
     /// Emits an expression whose value must be of type `want` (int promotes to fix).
-    pub fn expr_as(&mut self, e: &'a Expr<'a>, want: Num) -> R<()> {
+    pub fn expr_as<'b>(&mut self, e: &'b Expr<'a>, want: Num) -> R<()> {
         let t = self.expr(e)?;
         self.store_conv(t, want, e)
     }
 
     /// Emits a numeric expression and returns its type.
-    pub fn expr(&mut self, e: &'a Expr<'a>) -> R<Num> {
+    pub fn expr<'b>(&mut self, e: &'b Expr<'a>) -> R<Num> {
         if let Some((v, n)) = self.const_eval(e)? {
             self.push(v);
             return Ok(n);
@@ -1451,7 +1464,7 @@ impl<'a> Compiler<'a> {
 
     // ---------- calls ----------
 
-    pub fn call(&mut self, name: &'a Name<'a>, args: &'a [Expr<'a>], pos: Pos) -> R<Num> {
+    pub fn call<'b>(&mut self, name: &'b Name<'a>, args: &'b [Expr<'a>], pos: Pos) -> R<Num> {
         let n = name.text;
         if INTRINSICS.contains(&n) {
             if args.len() != 1 {
@@ -1550,7 +1563,7 @@ impl<'a> Compiler<'a> {
         })
     }
 
-    fn call_user(&mut self, f: usize, name: &'a Name<'a>, args: &'a [Expr<'a>], pos: Pos) -> R<Num> {
+    fn call_user<'b>(&mut self, f: usize, name: &'b Name<'a>, args: &'b [Expr<'a>], pos: Pos) -> R<Num> {
         if self.f.audio {
             return Err(Diag::error(pos, "audio(t) can't call functions"));
         }
@@ -1618,7 +1631,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// Resolves an argument that must be a record or record array of a given shape.
-    fn view_arg(&mut self, a: &'a Expr<'a>, want: &Shape, what: &String) -> R<View<'a>> {
+    fn view_arg<'b>(&mut self, a: &'b Expr<'a>, want: &Shape, what: &String) -> R<View<'b, 'a>> {
         let bad = || Diag::error(a.pos, format!("expected a {}", what));
         let ExprKind::Path(p) = &a.kind else { return Err(bad()) };
         let Res::View(v) = self.resolve(p)? else { return Err(bad()) };
@@ -1634,7 +1647,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// An array argument: a 1D array, a row, a constant table, or (read-only) text.
-    fn arr_arg(&mut self, a: &'a Expr<'a>, write: bool, param: Option<(Num, &Name<'a>, &str)>) -> R<()> {
+    fn arr_arg<'b>(&mut self, a: &'b Expr<'a>, write: bool, param: Option<(Num, &Name<'a>, &str)>) -> R<()> {
         if let Some(s) = a.plain_str() {
             if write {
                 return Err(Diag::error(a.pos, "text literals are read-only; pass a var array"));
@@ -1688,7 +1701,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// A text argument: literal, template, array, table, or a number printed as decimal.
-    fn text_arg(&mut self, a: &'a Expr<'a>) -> R<()> {
+    fn text_arg<'b>(&mut self, a: &'b Expr<'a>) -> R<()> {
         match &a.kind {
             ExprKind::Str(parts) => {
                 if let Some(s) = a.plain_str() {
@@ -1746,7 +1759,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// Emits an interpolated value; returns its template type (0 int, 1 fix, 2 text).
-    fn interp_value(&mut self, e: &'a Expr<'a>) -> R<u8> {
+    fn interp_value<'b>(&mut self, e: &'b Expr<'a>) -> R<u8> {
         if let Some(s) = e.plain_str() {
             let id = self.text_table(&s, e.pos)?;
             self.op_u16(Op::PUSH_ROM, id);
@@ -1778,6 +1791,10 @@ impl<'a> Compiler<'a> {
             let Item::Fn { body, .. } = &prog.items[self.funcs[f].item] else {
                 continue;
             };
+            // parsed when the whole source was: it can't fail now
+            let Ok(body) = parser::parse_body(self.source, *body) else {
+                continue;
+            };
             let names: Vec<&str> = self.funcs[f].params.iter().map(|p| p.0).collect();
             let mut direct = vec![false; names.len()];
             let mut w = WriteScan {
@@ -1786,7 +1803,7 @@ impl<'a> Compiler<'a> {
                 calls: Vec::new(),
                 syms: &self.syms,
             };
-            w.block(body);
+            w.block(&body);
             let calls = core::mem::take(&mut w.calls);
             for (p, callee, cp) in calls {
                 edges.push((f, p, callee, cp));

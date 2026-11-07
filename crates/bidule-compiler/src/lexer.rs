@@ -230,6 +230,32 @@ impl<'s> Lexer<'s> {
         }
     }
 
+    /// Lexes from `at`, a position the lexer gave for `src` (not for a fragment).
+    pub fn at(src: &'s str, at: Pos) -> Self {
+        let b = src.as_bytes();
+        let mut line = 1;
+        let mut line_start = 0;
+        if at.line > 1 {
+            for (i, &c) in b.iter().enumerate() {
+                if c == b'\n' {
+                    line += 1;
+                    if line == at.line {
+                        line_start = i + 1;
+                        break;
+                    }
+                }
+            }
+        }
+        Lexer {
+            src: b,
+            i: line_start + at.col as usize - 1,
+            line,
+            line_start,
+            depth: 0,
+            base: None,
+        }
+    }
+
     /// Lexes a fragment whose first character is at `base` (all on one line).
     pub fn fragment(src: &'s str, base: Pos) -> Self {
         Lexer {
@@ -514,7 +540,7 @@ impl<'s> Lexer<'s> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn toks(s: &str) -> Vec<Tok> {
+    fn toks(s: &str) -> Vec<Tok<'_>> {
         Lexer::new(s).tokenize().unwrap().into_iter().map(|t| t.tok).collect()
     }
     #[test]
