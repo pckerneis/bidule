@@ -57,7 +57,7 @@ impl<'a> Compiler<'a> {
                 Some((if pick.1 != t { pick.0.wrapping_shl(16) } else { pick.0 }, t))
             }
             ExprKind::Call(name, args) => {
-                let n = name.text.as_str();
+                let n = name.text;
                 if !matches!(n, "int" | "round" | "frac" | "abs" | "min" | "max") {
                     return Ok(None);
                 }
@@ -90,7 +90,7 @@ impl<'a> Compiler<'a> {
     }
 
     fn const_path(&mut self, p: &Path) -> R<Option<(i32, Num)>> {
-        let name = p.root.text.as_str();
+        let name = p.root.text;
         // locals shadow nothing (no shadowing), but a local may share no name with a constant
         if self.f.locals.iter().any(|l| l.name == name) {
             return Ok(None);

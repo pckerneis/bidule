@@ -67,7 +67,7 @@ pub enum Base {
 
 #[derive(Clone, Copy, Debug)]
 pub struct Term<'e> {
-    e: &'e Expr,
+    e: &'e Expr<'e>,
     stride: u32,
     bound: Option<u32>,
 }
@@ -102,8 +102,8 @@ pub enum Res<'e> {
     Audio(u8, Num),
     View(View<'e>),
     Map(u16),
-    MapRow(u16, &'e Expr),
-    MapCell(u16, &'e Expr, &'e Expr),
+    MapRow(u16, &'e Expr<'e>),
+    MapCell(u16, &'e Expr<'e>, &'e Expr<'e>),
     DynLen(View<'e>),
 }
 
@@ -230,8 +230,8 @@ impl<'a> Compiler<'a> {
         self.f.locals.iter().rev().find(|l| l.name == name)
     }
 
-    fn declare_local(&mut self, name: &'a Name, kind: LocalKind, slot: u8) -> R<()> {
-        let n = name.text.as_str();
+    fn declare_local(&mut self, name: &'a Name<'a>, kind: LocalKind, slot: u8) -> R<()> {
+        let n = name.text;
         if self.find_local(n).is_some() {
             return Err(Diag::error(name.pos, format!("'{}' is already a local here; pick another name", n)));
         }
@@ -278,7 +278,7 @@ impl<'a> Compiler<'a> {
         }
         for (n, &i) in order.iter().enumerate() {
             if let Item::Fn { name, .. } = &prog.items[i] {
-                if let Some(Sym::Func(id)) = self.syms.get(name.text.as_str()) {
+                if let Some(Sym::Func(id)) = self.syms.get(name.text) {
                     let id = *id;
                     self.funcs[id].index = n as u16;
                 }
@@ -287,7 +287,7 @@ impl<'a> Compiler<'a> {
         for i in order {
             match &prog.items[i] {
                 Item::Fn { name, params, body, .. } => {
-                    let Some(Sym::Func(id)) = self.syms.get(name.text.as_str()).cloned() else {
+                    let Some(Sym::Func(id)) = self.syms.get(name.text).cloned() else {
                         continue;
                     };
                     self.gen_fn(Some(id), &name.text, None, params, body);
@@ -312,7 +312,7 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn gen_fn(&mut self, id: Option<usize>, name: &'a str, handler: Option<HandlerKind>, params: &'a [Param], body: &'a Block) {
+    fn gen_fn(&mut self, id: Option<usize>, name: &'a str, handler: Option<HandlerKind>, params: &'a [Param<'a>], body: &'a Block<'a>) {
         let start = self.pc() as u32;
         self.f = FnState {
             name,
@@ -379,7 +379,7 @@ impl<'a> Compiler<'a> {
 
     // ---------- statements ----------
 
-    fn block(&mut self, b: &'a Block) {
+    fn block(&mut self, b: &'a Block<'a>) {
         let save_locals = self.f.locals.len();
         let save_slot = self.f.next_slot;
         for s in &b.stmts {
@@ -398,7 +398,7 @@ impl<'a> Compiler<'a> {
         self.f.next_slot = save_slot;
     }
 
-    fn stmt(&mut self, s: &'a Stmt) -> R<()> {
+    fn stmt(&mut self, s: &'a Stmt<'a>) -> R<()> {
         self.mark(s.pos);
         match &s.kind {
             StmtKind::Var { name, fix, init } => {
@@ -536,12 +536,12 @@ impl<'a> Compiler<'a> {
     }
 
     /// A condition: any number (fix compares to 0 like int).
-    fn cond(&mut self, e: &'a Expr) -> R<()> {
+    fn cond(&mut self, e: &'a Expr<'a>) -> R<()> {
         self.expr(e)?;
         Ok(())
     }
 
-    fn switch(&mut self, value: &'a Expr, cases: &'a [(Vec<Expr>, Block)], default: Option<&'a Block>, pos: Pos) -> R<()> {
+    fn switch(&mut self, value: &'a Expr<'a>, cases: &'a [(Vec<Expr<'a>>, Block<'a>)], default: Option<&'a Block<'a>>, pos: Pos) -> R<()> {
         let t = self.expr(value)?;
         let tmp = self.alloc_local(1, pos)?;
         self.op_u8(Op::LOCAL_STORE, tmp);
@@ -607,10 +607,10 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn enum_member(&self, e: &Expr) -> Option<usize> {
+    fn enum_member(&self, e: &Expr<'a>) -> Option<usize> {
         if let ExprKind::Path(p) = &e.kind {
             if p.sels.len() == 1 {
-                if let Some(Sym::Enum(id)) = self.syms.get(p.root.text.as_str()) {
+                if let Some(Sym::Enum(id)) = self.syms.get(p.root.text) {
                     return Some(*id);
                 }
             }
@@ -639,7 +639,7 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn assign(&mut self, target: &'a Path, op: AssignOp, value: &'a Expr, pos: Pos) -> R<()> {
+    fn assign(&mut self, target: &'a Path<'a>, op: AssignOp, value: &'a Expr<'a>, pos: Pos) -> R<()> {
         let r = self.resolve(target)?;
         self.check_scalar_store(&r, target.root.pos)?;
         if let Res::View(v) = &r {
@@ -682,7 +682,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// Converts the value on the stack (of type `t`) for a store of type `want`.
-    fn store_conv(&mut self, t: Num, want: Num, value: &'a Expr) -> R<()> {
+    fn store_conv(&mut self, t: Num, want: Num, value: &'a Expr<'a>) -> R<()> {
         if t == Num::Fix && want == Num::Int {
             return Err(Diag::error(
                 value.pos,
@@ -697,7 +697,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// Warns when `int / int` lands in a fix: the division truncates first.
-    pub fn check_int_div(&mut self, e: &'a Expr, want: Num) {
+    pub fn check_int_div(&mut self, e: &'a Expr<'a>, want: Num) {
         if want != Num::Fix {
             return;
         }
@@ -716,7 +716,7 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn incdec(&mut self, target: &'a Path, inc: bool, pos: Pos) -> R<()> {
+    fn incdec(&mut self, target: &'a Path<'a>, inc: bool, pos: Pos) -> R<()> {
         let r = self.resolve(target)?;
         self.check_scalar_store(&r, target.root.pos)?;
         if let Res::View(v) = &r {
@@ -786,7 +786,7 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn record_copy(&mut self, dst: View<'a>, rec: RecId, value: &'a Expr, pos: Pos) -> R<()> {
+    fn record_copy(&mut self, dst: View<'a>, rec: RecId, value: &'a Expr<'a>, pos: Pos) -> R<()> {
         let ExprKind::Path(p) = &value.kind else {
             return Err(Diag::error(value.pos, format!("expected a {} to copy", self.records[rec].name)));
         };
@@ -826,8 +826,8 @@ impl<'a> Compiler<'a> {
 
     // ---------- resolving names ----------
 
-    pub fn resolve(&mut self, p: &'a Path) -> R<Res<'a>> {
-        let name = p.root.text.as_str();
+    pub fn resolve(&mut self, p: &'a Path<'a>) -> R<Res<'a>> {
+        let name = p.root.text;
         let mut cur: Res<'a> = if let Some(l) = self.find_local(name).cloned() {
             match l.kind {
                 LocalKind::Num(n) => Res::Local(l.slot, n),
@@ -927,7 +927,7 @@ impl<'a> Compiler<'a> {
         Ok(cur)
     }
 
-    fn finish_const(&self, p: &'a Path, used: usize, v: i32) -> R<Res<'a>> {
+    fn finish_const(&self, p: &'a Path<'a>, used: usize, v: i32) -> R<Res<'a>> {
         if let Some(s) = p.sels.get(used) {
             let pos = match s {
                 Sel::Index(e) => e.pos,
@@ -938,7 +938,7 @@ impl<'a> Compiler<'a> {
         Ok(Res::Const(v, Num::Int))
     }
 
-    fn resolve_asset(&mut self, p: &'a Path, k: usize) -> R<Res<'a>> {
+    fn resolve_asset(&mut self, p: &'a Path<'a>, k: usize) -> R<Res<'a>> {
         let prefix = ASSET_PREFIXES[k];
         let Some(Sel::Field(n)) = p.sels.first() else {
             return Err(Diag::error(p.root.pos, format!("name an asset: {}.NAME", prefix)));
@@ -979,7 +979,7 @@ impl<'a> Compiler<'a> {
         Ok(cur)
     }
 
-    fn select(&mut self, cur: Res<'a>, sel: &'a Sel, last: bool) -> R<Res<'a>> {
+    fn select(&mut self, cur: Res<'a>, sel: &'a Sel<'a>, last: bool) -> R<Res<'a>> {
         match (cur, sel) {
             (Res::Map(m), Sel::Index(e)) => Ok(Res::MapRow(m, e)),
             (Res::MapRow(m, y), Sel::Index(e)) => Ok(Res::MapCell(m, y, e)),
@@ -1202,7 +1202,7 @@ impl<'a> Compiler<'a> {
 
     // ---------- types ----------
 
-    pub fn ty(&mut self, e: &'a Expr) -> R<ETy> {
+    pub fn ty(&mut self, e: &'a Expr<'a>) -> R<ETy> {
         Ok(match &e.kind {
             ExprKind::Int(_) => ETy::Num(Num::Int),
             ExprKind::Fix(_) => ETy::Num(Num::Fix),
@@ -1236,14 +1236,14 @@ impl<'a> Compiler<'a> {
         })
     }
 
-    fn num_ty(&mut self, e: &'a Expr) -> R<Num> {
+    fn num_ty(&mut self, e: &'a Expr<'a>) -> R<Num> {
         match self.ty(e)? {
             ETy::Num(n) => Ok(n),
             other => Err(self.not_a_number(e, &other)),
         }
     }
 
-    fn not_a_number(&self, e: &Expr, t: &ETy) -> Diag {
+    fn not_a_number(&self, e: &Expr<'a>, t: &ETy) -> Diag {
         let what = match t {
             ETy::Text => "text",
             ETy::Arr(_) => "an array",
@@ -1259,8 +1259,8 @@ impl<'a> Compiler<'a> {
         Diag::error(e.pos, format!("expected a number, found {}{}", what, hint))
     }
 
-    fn call_type(&mut self, name: &'a Name, args: &'a [Expr]) -> R<Num> {
-        let n = name.text.as_str();
+    fn call_type(&mut self, name: &'a Name<'a>, args: &'a [Expr<'a>]) -> R<Num> {
+        let n = name.text;
         match n {
             "int" | "round" => return Ok(Num::Int),
             "frac" => return Ok(Num::Fix),
@@ -1288,13 +1288,13 @@ impl<'a> Compiler<'a> {
     // ---------- expressions ----------
 
     /// Emits an expression whose value must be of type `want` (int promotes to fix).
-    pub fn expr_as(&mut self, e: &'a Expr, want: Num) -> R<()> {
+    pub fn expr_as(&mut self, e: &'a Expr<'a>, want: Num) -> R<()> {
         let t = self.expr(e)?;
         self.store_conv(t, want, e)
     }
 
     /// Emits a numeric expression and returns its type.
-    pub fn expr(&mut self, e: &'a Expr) -> R<Num> {
+    pub fn expr(&mut self, e: &'a Expr<'a>) -> R<Num> {
         if let Some((v, n)) = self.const_eval(e)? {
             self.push(v);
             return Ok(n);
@@ -1451,8 +1451,8 @@ impl<'a> Compiler<'a> {
 
     // ---------- calls ----------
 
-    pub fn call(&mut self, name: &'a Name, args: &'a [Expr], pos: Pos) -> R<Num> {
-        let n = name.text.as_str();
+    pub fn call(&mut self, name: &'a Name<'a>, args: &'a [Expr<'a>], pos: Pos) -> R<Num> {
+        let n = name.text;
         if INTRINSICS.contains(&n) {
             if args.len() != 1 {
                 return Err(Diag::error(pos, format!("{}(x) takes one argument", n)));
@@ -1550,7 +1550,7 @@ impl<'a> Compiler<'a> {
         })
     }
 
-    fn call_user(&mut self, f: usize, name: &'a Name, args: &'a [Expr], pos: Pos) -> R<Num> {
+    fn call_user(&mut self, f: usize, name: &'a Name<'a>, args: &'a [Expr<'a>], pos: Pos) -> R<Num> {
         if self.f.audio {
             return Err(Diag::error(pos, "audio(t) can't call functions"));
         }
@@ -1607,7 +1607,7 @@ impl<'a> Compiler<'a> {
         Ok(sig.ret)
     }
 
-    fn check_ro(&self, v: &View, writes: bool, f: &Name, p: &str, pos: Pos) -> R<()> {
+    fn check_ro(&self, v: &View, writes: bool, f: &Name<'a>, p: &str, pos: Pos) -> R<()> {
         if writes && matches!(v.base, Base::Rom(_)) {
             return Err(Diag::error(
                 pos,
@@ -1618,7 +1618,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// Resolves an argument that must be a record or record array of a given shape.
-    fn view_arg(&mut self, a: &'a Expr, want: &Shape, what: &String) -> R<View<'a>> {
+    fn view_arg(&mut self, a: &'a Expr<'a>, want: &Shape, what: &String) -> R<View<'a>> {
         let bad = || Diag::error(a.pos, format!("expected a {}", what));
         let ExprKind::Path(p) = &a.kind else { return Err(bad()) };
         let Res::View(v) = self.resolve(p)? else { return Err(bad()) };
@@ -1634,7 +1634,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// An array argument: a 1D array, a row, a constant table, or (read-only) text.
-    fn arr_arg(&mut self, a: &'a Expr, write: bool, param: Option<(Num, &Name, &str)>) -> R<()> {
+    fn arr_arg(&mut self, a: &'a Expr<'a>, write: bool, param: Option<(Num, &Name<'a>, &str)>) -> R<()> {
         if let Some(s) = a.plain_str() {
             if write {
                 return Err(Diag::error(a.pos, "text literals are read-only; pass a var array"));
@@ -1688,7 +1688,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// A text argument: literal, template, array, table, or a number printed as decimal.
-    fn text_arg(&mut self, a: &'a Expr) -> R<()> {
+    fn text_arg(&mut self, a: &'a Expr<'a>) -> R<()> {
         match &a.kind {
             ExprKind::Str(parts) => {
                 if let Some(s) = a.plain_str() {
@@ -1746,7 +1746,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// Emits an interpolated value; returns its template type (0 int, 1 fix, 2 text).
-    fn interp_value(&mut self, e: &'a Expr) -> R<u8> {
+    fn interp_value(&mut self, e: &'a Expr<'a>) -> R<u8> {
         if let Some(s) = e.plain_str() {
             let id = self.text_table(&s, e.pos)?;
             self.op_u16(Op::PUSH_ROM, id);
@@ -1843,13 +1843,13 @@ struct WriteScan<'s, 'a> {
 }
 
 impl<'s, 'a> WriteScan<'s, 'a> {
-    fn param_of(&self, e: &Expr) -> Option<usize> {
+    fn param_of(&self, e: &Expr<'a>) -> Option<usize> {
         match &e.kind {
             ExprKind::Path(p) => self.names.iter().position(|n| *n == p.root.text),
             _ => None,
         }
     }
-    fn target(&mut self, p: &Path) {
+    fn target(&mut self, p: &Path<'a>) {
         if let Some(i) = self.names.iter().position(|n| *n == p.root.text) {
             if !p.sels.is_empty() {
                 self.direct[i] = true;
@@ -1861,12 +1861,12 @@ impl<'s, 'a> WriteScan<'s, 'a> {
             }
         }
     }
-    fn block(&mut self, b: &Block) {
+    fn block(&mut self, b: &Block<'a>) {
         for s in &b.stmts {
             self.stmt(s);
         }
     }
-    fn stmt(&mut self, s: &Stmt) {
+    fn stmt(&mut self, s: &Stmt<'a>) {
         match &s.kind {
             StmtKind::Var { init: Some(e), .. } => self.expr(e),
             StmtKind::Var { .. } | StmtKind::Break | StmtKind::Continue => {}
@@ -1914,7 +1914,7 @@ impl<'s, 'a> WriteScan<'s, 'a> {
             StmtKind::Return(None) => {}
         }
     }
-    fn expr(&mut self, e: &Expr) {
+    fn expr(&mut self, e: &Expr<'a>) {
         match &e.kind {
             ExprKind::Call(name, args) => {
                 if let Some(b) = builtins::by_name(&name.text) {
@@ -1925,7 +1925,7 @@ impl<'s, 'a> WriteScan<'s, 'a> {
                             }
                         }
                     }
-                } else if let Some(Sym::Func(g)) = self.syms.get(name.text.as_str()) {
+                } else if let Some(Sym::Func(g)) = self.syms.get(name.text) {
                     for (q, a) in args.iter().enumerate() {
                         if let Some(i) = self.param_of(a) {
                             self.calls.push((i, *g, q));

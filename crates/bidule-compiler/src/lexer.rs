@@ -1,18 +1,17 @@
 //! Source text to tokens (spec: Language › Program structure and lexical rules).
 
-use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::diag::{Diag, Pos};
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum Tok {
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Tok<'s> {
     Int(i32),
     /// 16.16 raw value.
     Fix(i32),
     /// Raw text between the quotes, escapes not yet processed (interpolation is parsed later).
-    Str(String),
-    Ident(String),
+    Str(&'s str),
+    Ident(&'s str),
     Kw(Kw),
     P(P),
     Nl,
@@ -162,10 +161,50 @@ fn keyword(s: &str) -> Option<Kw> {
     })
 }
 
-#[derive(Clone, Debug)]
-pub struct Token {
-    pub tok: Tok,
+#[derive(Clone, Copy, Debug)]
+pub struct Token<'s> {
+    pub tok: Tok<'s>,
     pub pos: Pos,
+}
+
+/// Tokens on demand, as [`Lexer::tokenize`] would list them (newline runs
+/// collapsed, none at the start), then `Eof` forever. Only for a source that
+/// passed [`Lexer::check`]: a lexing error reads as the end of the file.
+pub struct Stream<'s> {
+    lex: Lexer<'s>,
+    /// The last token given was a newline, or none was given yet.
+    after_nl: bool,
+    eof: Option<Token<'s>>,
+}
+
+impl<'s> Stream<'s> {
+    pub fn new(lex: Lexer<'s>) -> Self {
+        Stream {
+            lex,
+            after_nl: true,
+            eof: None,
+        }
+    }
+
+    pub fn next(&mut self) -> Token<'s> {
+        if let Some(t) = self.eof {
+            return t;
+        }
+        loop {
+            let t = match self.lex.next() {
+                Ok(t) => t,
+                Err(d) => Token { tok: Tok::Eof, pos: d.pos },
+            };
+            if t.tok == Tok::Nl && self.after_nl {
+                continue;
+            }
+            self.after_nl = t.tok == Tok::Nl;
+            if t.tok == Tok::Eof {
+                self.eof = Some(t);
+            }
+            return t;
+        }
+    }
 }
 
 pub struct Lexer<'s> {
@@ -218,8 +257,15 @@ impl<'s> Lexer<'s> {
         *self.src.get(self.i + k).unwrap_or(&0)
     }
 
-    pub fn tokenize(mut self) -> Result<Vec<Token>, Diag> {
-        let mut out: Vec<Token> = Vec::new();
+    /// Lexes the whole source without keeping the tokens: the first lexing
+    /// error, if any. The parser checks first, then reads a [`Stream`].
+    pub fn check(mut self) -> Result<(), Diag> {
+        while self.next()?.tok != Tok::Eof {}
+        Ok(())
+    }
+
+    pub fn tokenize(mut self) -> Result<Vec<Token<'s>>, Diag> {
+        let mut out: Vec<Token<'s>> = Vec::new();
         loop {
             let t = self.next()?;
             let eof = t.tok == Tok::Eof;
@@ -234,7 +280,7 @@ impl<'s> Lexer<'s> {
         }
     }
 
-    fn next(&mut self) -> Result<Token, Diag> {
+    fn next(&mut self) -> Result<Token<'s>, Diag> {
         // skip spaces, comments, and newlines inside ( ) or [ ]
         loop {
             match self.peek(0) {
@@ -268,7 +314,7 @@ impl<'s> Lexer<'s> {
             let word = core::str::from_utf8(&self.src[s..self.i]).unwrap();
             let tok = match keyword(word) {
                 Some(k) => Tok::Kw(k),
-                None => Tok::Ident(String::from(word)),
+                None => Tok::Ident(word),
             };
             return Ok(Token { tok, pos });
         }
@@ -287,7 +333,7 @@ impl<'s> Lexer<'s> {
         self.line_start = self.i;
     }
 
-    fn number(&mut self, pos: Pos) -> Result<Token, Diag> {
+    fn number(&mut self, pos: Pos) -> Result<Token<'s>, Diag> {
         let s = self.i;
         let (radix, start) = match (self.peek(0), self.peek(1)) {
             (b'0', b'x' | b'X') => (16, s + 2),
@@ -352,7 +398,7 @@ impl<'s> Lexer<'s> {
         })
     }
 
-    fn char_lit(&mut self, pos: Pos) -> Result<Token, Diag> {
+    fn char_lit(&mut self, pos: Pos) -> Result<Token<'s>, Diag> {
         self.i += 1;
         let c = match self.peek(0) {
             b'\\' => {
@@ -378,7 +424,7 @@ impl<'s> Lexer<'s> {
         })
     }
 
-    fn string(&mut self, pos: Pos) -> Result<Token, Diag> {
+    fn string(&mut self, pos: Pos) -> Result<Token<'s>, Diag> {
         self.i += 1;
         let s = self.i;
         loop {
@@ -395,13 +441,10 @@ impl<'s> Lexer<'s> {
         }
         let raw = core::str::from_utf8(&self.src[s..self.i]).unwrap();
         self.i += 1;
-        Ok(Token {
-            tok: Tok::Str(String::from(raw)),
-            pos,
-        })
+        Ok(Token { tok: Tok::Str(raw), pos })
     }
 
-    fn punct(&mut self, pos: Pos) -> Result<Token, Diag> {
+    fn punct(&mut self, pos: Pos) -> Result<Token<'s>, Diag> {
         use P::*;
         let (a, b, c) = (self.peek(0), self.peek(1), self.peek(2));
         let (p, n) = match (a, b, c) {

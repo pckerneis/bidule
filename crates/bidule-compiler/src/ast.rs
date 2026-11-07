@@ -1,14 +1,13 @@
 //! Syntax tree.
 
 use alloc::boxed::Box;
-use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::diag::Pos;
 
-#[derive(Clone, Debug)]
-pub struct Name {
-    pub text: String,
+#[derive(Clone, Copy, Debug)]
+pub struct Name<'s> {
+    pub text: &'s str,
     pub pos: Pos,
 }
 
@@ -84,42 +83,42 @@ pub struct Spec {
 }
 
 #[derive(Clone, Debug)]
-pub enum StrPart {
+pub enum StrPart<'s> {
     Lit(Vec<u8>),
-    Interp(Expr, Spec),
+    Interp(Expr<'s>, Spec),
 }
 
 #[derive(Clone, Debug)]
-pub enum Sel {
-    Index(Expr),
-    Field(Name),
+pub enum Sel<'s> {
+    Index(Expr<'s>),
+    Field(Name<'s>),
 }
 
 #[derive(Clone, Debug)]
-pub struct Path {
-    pub root: Name,
-    pub sels: Vec<Sel>,
+pub struct Path<'s> {
+    pub root: Name<'s>,
+    pub sels: Vec<Sel<'s>>,
 }
 
 #[derive(Clone, Debug)]
-pub enum ExprKind {
+pub enum ExprKind<'s> {
     Int(i32),
     Fix(i32),
-    Str(Vec<StrPart>),
-    Path(Path),
-    Call(Name, Vec<Expr>),
-    Unary(UnOp, Box<Expr>),
-    Binary(BinOp, Box<Expr>, Box<Expr>),
-    Cond(Box<Expr>, Box<Expr>, Box<Expr>),
+    Str(Vec<StrPart<'s>>),
+    Path(Path<'s>),
+    Call(Name<'s>, Vec<Expr<'s>>),
+    Unary(UnOp, Box<Expr<'s>>),
+    Binary(BinOp, Box<Expr<'s>>, Box<Expr<'s>>),
+    Cond(Box<Expr<'s>>, Box<Expr<'s>>, Box<Expr<'s>>),
 }
 
 #[derive(Clone, Debug)]
-pub struct Expr {
-    pub kind: ExprKind,
+pub struct Expr<'s> {
+    pub kind: ExprKind<'s>,
     pub pos: Pos,
 }
 
-impl Expr {
+impl<'s> Expr<'s> {
     /// A string literal with no interpolation: its bytes.
     pub fn plain_str(&self) -> Option<Vec<u8>> {
         match &self.kind {
@@ -140,28 +139,28 @@ impl Expr {
 
 /// `int`, `fix` or a record type name.
 #[derive(Clone, Debug)]
-pub enum TypeName {
+pub enum TypeName<'s> {
     Int,
     Fix,
-    Record(Name),
+    Record(Name<'s>),
 }
 
 /// Type and dimensions of a declaration. `dims` entries are `None` for `[]`.
 #[derive(Clone, Debug)]
-pub struct Shape {
-    pub ty: TypeName,
-    pub dims: Vec<Option<Expr>>,
+pub struct Shape<'s> {
+    pub ty: TypeName<'s>,
+    pub dims: Vec<Option<Expr<'s>>>,
     /// The type was written explicitly (`: T`).
     pub explicit: bool,
 }
 
 #[derive(Clone, Debug)]
-pub enum Init {
-    Expr(Expr),
-    List(Vec<InitItem>, Pos),
+pub enum Init<'s> {
+    Expr(Expr<'s>),
+    List(Vec<InitItem<'s>>, Pos),
 }
 
-impl Init {
+impl<'s> Init<'s> {
     pub fn pos(&self) -> Pos {
         match self {
             Init::Expr(e) => e.pos,
@@ -171,9 +170,9 @@ impl Init {
 }
 
 #[derive(Clone, Debug)]
-pub struct InitItem {
-    pub field: Option<Name>,
-    pub value: Init,
+pub struct InitItem<'s> {
+    pub field: Option<Name<'s>>,
+    pub value: Init<'s>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -183,69 +182,69 @@ pub enum AssignOp {
 }
 
 #[derive(Clone, Debug)]
-pub struct Block {
-    pub stmts: Vec<Stmt>,
+pub struct Block<'s> {
+    pub stmts: Vec<Stmt<'s>>,
     pub end: Pos,
 }
 
 #[derive(Clone, Debug)]
-pub enum StmtKind {
+pub enum StmtKind<'s> {
     Var {
-        name: Name,
+        name: Name<'s>,
         fix: bool,
-        init: Option<Expr>,
+        init: Option<Expr<'s>>,
     },
     Assign {
-        target: Path,
+        target: Path<'s>,
         op: AssignOp,
-        value: Expr,
+        value: Expr<'s>,
     },
     IncDec {
-        target: Path,
+        target: Path<'s>,
         inc: bool,
     },
     If {
-        cond: Expr,
-        then: Block,
-        els: Option<Box<Else>>,
+        cond: Expr<'s>,
+        then: Block<'s>,
+        els: Option<Box<Else<'s>>>,
     },
     While {
-        cond: Expr,
-        body: Block,
+        cond: Expr<'s>,
+        body: Block<'s>,
     },
     For {
-        init: Option<Box<Stmt>>,
-        cond: Option<Expr>,
-        step: Option<Box<Stmt>>,
-        body: Block,
+        init: Option<Box<Stmt<'s>>>,
+        cond: Option<Expr<'s>>,
+        step: Option<Box<Stmt<'s>>>,
+        body: Block<'s>,
     },
     Switch {
-        value: Expr,
-        cases: Vec<(Vec<Expr>, Block)>,
-        default: Option<Block>,
+        value: Expr<'s>,
+        cases: Vec<(Vec<Expr<'s>>, Block<'s>)>,
+        default: Option<Block<'s>>,
     },
     Break,
     Continue,
-    Return(Option<Expr>),
-    Call(Expr),
+    Return(Option<Expr<'s>>),
+    Call(Expr<'s>),
 }
 
 #[derive(Clone, Debug)]
-pub enum Else {
-    If(Stmt),
-    Block(Block),
+pub enum Else<'s> {
+    If(Stmt<'s>),
+    Block(Block<'s>),
 }
 
 #[derive(Clone, Debug)]
-pub struct Stmt {
-    pub kind: StmtKind,
+pub struct Stmt<'s> {
+    pub kind: StmtKind<'s>,
     pub pos: Pos,
 }
 
 #[derive(Clone, Debug)]
-pub struct Param {
-    pub name: Name,
-    pub shape: Shape,
+pub struct Param<'s> {
+    pub name: Name<'s>,
+    pub shape: Shape<'s>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -257,58 +256,58 @@ pub enum HandlerKind {
 }
 
 #[derive(Clone, Debug)]
-pub struct Field {
-    pub name: Name,
-    pub shape: Shape,
+pub struct Field<'s> {
+    pub name: Name<'s>,
+    pub shape: Shape<'s>,
 }
 
 #[derive(Clone, Debug)]
-pub enum Item {
+pub enum Item<'s> {
     Const {
-        name: Name,
-        shape: Shape,
-        init: Init,
+        name: Name<'s>,
+        shape: Shape<'s>,
+        init: Init<'s>,
     },
     Var {
-        name: Name,
-        shape: Shape,
-        init: Option<Init>,
+        name: Name<'s>,
+        shape: Shape<'s>,
+        init: Option<Init<'s>>,
     },
     AudioVar {
-        name: Name,
+        name: Name<'s>,
         fix: bool,
-        init: Expr,
+        init: Expr<'s>,
     },
     Record {
-        name: Name,
-        fields: Vec<Field>,
+        name: Name<'s>,
+        fields: Vec<Field<'s>>,
     },
     Enum {
-        name: Name,
-        members: Vec<(Name, Option<Expr>)>,
+        name: Name<'s>,
+        members: Vec<(Name<'s>, Option<Expr<'s>>)>,
     },
     Sprite {
-        name: Name,
-        tile: Expr,
-        size: Option<(Expr, Expr)>,
+        name: Name<'s>,
+        tile: Expr<'s>,
+        size: Option<(Expr<'s>, Expr<'s>)>,
     },
     Fn {
-        name: Name,
-        params: Vec<Param>,
+        name: Name<'s>,
+        params: Vec<Param<'s>>,
         ret_fix: bool,
-        body: Block,
+        body: Block<'s>,
     },
     Handler {
         kind: HandlerKind,
         pos: Pos,
-        params: Vec<Param>,
-        body: Block,
+        params: Vec<Param<'s>>,
+        body: Block<'s>,
     },
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct Program {
-    pub items: Vec<Item>,
+pub struct Program<'s> {
+    pub items: Vec<Item<'s>>,
     /// `// @key value` lines before the first declaration.
-    pub meta: Vec<(String, String, Pos)>,
+    pub meta: Vec<(&'s str, &'s str, Pos)>,
 }

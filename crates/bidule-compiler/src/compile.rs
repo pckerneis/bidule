@@ -97,7 +97,7 @@ enum ConstState {
 }
 
 pub struct Compiler<'a> {
-    pub prog: &'a Program,
+    pub prog: &'a Program<'a>,
     pub source: &'a [u8],
     pub opts: Options,
     pub diags: Vec<Diag>,
@@ -127,7 +127,7 @@ pub struct Compiler<'a> {
 }
 
 impl<'a> Compiler<'a> {
-    pub fn new(prog: &'a Program, source: &'a [u8], assets: &Assets<'a>, opts: Options) -> Self {
+    pub fn new(prog: &'a Program<'a>, source: &'a [u8], assets: &Assets<'a>, opts: Options) -> Self {
         Compiler {
             prog,
             source,
@@ -168,8 +168,8 @@ impl<'a> Compiler<'a> {
 
     // ---------- names ----------
 
-    fn claim(&mut self, name: &'a Name, sym: Sym) -> R<()> {
-        let n = name.text.as_str();
+    fn claim(&mut self, name: &'a Name<'a>, sym: Sym) -> R<()> {
+        let n = name.text;
         if BUILTIN_CONSTS.iter().any(|c| c.0 == n) {
             return Err(Diag::error(name.pos, format!("'{}' is a built-in constant; pick another name", n)));
         }
@@ -188,7 +188,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// "unknown X 'n' — did you mean 'm'?"
-    pub fn unknown(&self, what: &str, name: &Name, extra: &[&str]) -> Diag {
+    pub fn unknown(&self, what: &str, name: &Name<'a>, extra: &[&str]) -> Diag {
         let cands = self
             .syms
             .keys()
@@ -334,7 +334,7 @@ impl<'a> Compiler<'a> {
             let ty = match &f.shape.ty {
                 TypeName::Int => FieldTy::Num(Num::Int),
                 TypeName::Fix => FieldTy::Num(Num::Fix),
-                TypeName::Record(n) => match self.syms.get(n.text.as_str()) {
+                TypeName::Record(n) => match self.syms.get(n.text) {
                     Some(Sym::Record(r)) => FieldTy::Rec(*r),
                     _ => return Err(self.unknown("record type", n, &[])),
                 },
@@ -343,7 +343,7 @@ impl<'a> Compiler<'a> {
                 FieldTy::Num(num) => leaves.push(LeafDef {
                     num,
                     mult: count,
-                    path: f.name.text.clone(),
+                    path: String::from(f.name.text),
                 }),
                 FieldTy::Rec(r) => {
                     self.resolve_record(r)?;
@@ -377,7 +377,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// Declared dimensions as numbers. `[]` is allowed only when `open`.
-    pub fn dims_of(&mut self, dims: &[Option<Expr>], pos: Pos, open: bool) -> R<Vec<u32>> {
+    pub fn dims_of(&mut self, dims: &[Option<Expr<'a>>], pos: Pos, open: bool) -> R<Vec<u32>> {
         let mut out = Vec::new();
         for d in dims {
             match d {
@@ -426,7 +426,7 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn declare_const(&mut self, name: &'a Name, shape: &'a Shape, init: &'a Init) -> R<()> {
+    fn declare_const(&mut self, name: &'a Name<'a>, shape: &'a Shape<'a>, init: &'a Init<'a>) -> R<()> {
         // a table: brackets, a record type, or text
         let is_text = matches!(init, Init::Expr(e) if matches!(e.kind, ExprKind::Str(_)));
         if !shape.dims.is_empty() || matches!(shape.ty, TypeName::Record(_)) || is_text || matches!(init, Init::List(..)) {
@@ -462,7 +462,7 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    pub fn const_int(&mut self, e: &Expr) -> R<i32> {
+    pub fn const_int(&mut self, e: &Expr<'a>) -> R<i32> {
         match self.const_eval(e)? {
             Some((v, Num::Int)) => Ok(v),
             Some((_, Num::Fix)) => Err(Diag::error(e.pos, "expected an int constant; use int(x)")),
@@ -539,11 +539,11 @@ impl<'a> Compiler<'a> {
     }
 
     /// Element type and dimensions declared by a shape.
-    fn elem_of(&mut self, shape: &Shape) -> R<Elem> {
+    fn elem_of(&mut self, shape: &Shape<'a>) -> R<Elem> {
         Ok(match &shape.ty {
             TypeName::Int => Elem::Num(Num::Int),
             TypeName::Fix => Elem::Num(Num::Fix),
-            TypeName::Record(n) => match self.syms.get(n.text.as_str()) {
+            TypeName::Record(n) => match self.syms.get(n.text) {
                 Some(Sym::Record(r)) => Elem::Rec(*r),
                 _ => return Err(self.unknown("record type", n, &[])),
             },
@@ -551,7 +551,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// Fills `out` (row-major, `dims`) from an initializer of numbers.
-    fn num_values(&mut self, init: &Init, num: Num, dims: &[u32], text_rows: bool, out: &mut Vec<i32>, at: usize) -> R<usize> {
+    fn num_values(&mut self, init: &Init<'a>, num: Num, dims: &[u32], text_rows: bool, out: &mut Vec<i32>, at: usize) -> R<usize> {
         match (init, dims.len()) {
             (Init::Expr(e), _) if matches!(e.kind, ExprKind::Str(_)) => {
                 let s = e
@@ -609,7 +609,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// Fills per-leaf value vectors for record instance `inst` from `{ ... }`.
-    fn rec_values(&mut self, rec: RecId, init: &Init, leaves: &mut [Vec<i32>], inst: usize) -> R<()> {
+    fn rec_values(&mut self, rec: RecId, init: &Init<'a>, leaves: &mut [Vec<i32>], inst: usize) -> R<()> {
         let Init::List(items, p) = init else {
             return Err(Diag::error(
                 init.pos(),
@@ -645,7 +645,7 @@ impl<'a> Compiler<'a> {
                     let sub: Vec<Vec<i32>> = Vec::new();
                     let _ = sub;
                     // sub-record values land in this record's leaves at the sub-instance index
-                    let elems: Vec<&Init> = if f.dims.is_empty() {
+                    let elems: Vec<&Init<'a>> = if f.dims.is_empty() {
                         vec![&it.value]
                     } else {
                         match &it.value {
@@ -668,7 +668,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn const_table(&mut self, name: &'a Name, shape: &'a Shape, init: &'a Init) -> R<ArrSym> {
+    fn const_table(&mut self, name: &'a Name<'a>, shape: &'a Shape<'a>, init: &'a Init<'a>) -> R<ArrSym> {
         let elem = self.elem_of(shape)?;
         let is_text = matches!(init, Init::Expr(e) if matches!(e.kind, ExprKind::Str(_)));
         let mut dims = self.dims_of(&shape.dims, name.pos, true)?;
@@ -765,7 +765,7 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn declare_var(&mut self, name: &'a Name, shape: &'a Shape, init: Option<&'a Init>) -> R<()> {
+    fn declare_var(&mut self, name: &'a Name<'a>, shape: &'a Shape<'a>, init: Option<&'a Init<'a>>) -> R<()> {
         let elem = self.elem_of(shape)?;
         let text = init.and_then(|i| match i {
             Init::Expr(e) => e.plain_str(),
@@ -842,7 +842,7 @@ impl<'a> Compiler<'a> {
                     }
                     None => NO_INIT,
                 };
-                let id = self.alloc_array(count, cols, init_id, name.text.clone(), name.pos)?;
+                let id = self.alloc_array(count, cols, init_id, String::from(name.text), name.pos)?;
                 self.claim(
                     name,
                     Sym::Arr(ArrSym {
@@ -881,7 +881,7 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn declare_audio_var(&mut self, name: &'a Name, fix: bool, init: &'a Expr) -> R<()> {
+    fn declare_audio_var(&mut self, name: &'a Name<'a>, fix: bool, init: &'a Expr<'a>) -> R<()> {
         let num = if fix { Num::Fix } else { Num::Int };
         let (v, n) = self
             .const_eval(init)?
@@ -897,7 +897,7 @@ impl<'a> Compiler<'a> {
         self.claim(name, Sym::Audio(self.audio_vars.len() as u8 - 1, num))
     }
 
-    fn declare_sprite(&mut self, name: &'a Name, tile: &Expr, size: Option<&(Expr, Expr)>) -> R<()> {
+    fn declare_sprite(&mut self, name: &'a Name<'a>, tile: &Expr<'a>, size: Option<&(Expr<'a>, Expr<'a>)>) -> R<()> {
         let t = self.const_int(tile)?;
         let (w, h) = match size {
             Some((w, h)) => (self.const_int(w)?, self.const_int(h)?),
@@ -913,7 +913,7 @@ impl<'a> Compiler<'a> {
         self.claim(name, Sym::Const(sprite_value(t, w, h), Num::Int))
     }
 
-    fn declare_fn(&mut self, item: usize, name: &'a Name, params: &'a [Param], ret_fix: bool) -> R<()> {
+    fn declare_fn(&mut self, item: usize, name: &'a Name<'a>, params: &'a [Param<'a>], ret_fix: bool) -> R<()> {
         if self.funcs.len() >= limits::FUNCTIONS - 4 {
             return Err(Diag::error(name.pos, "too many functions"));
         }
@@ -923,7 +923,7 @@ impl<'a> Compiler<'a> {
             if ps.iter().any(|q: &(&str, ParamKind)| q.0 == p.name.text) {
                 return Err(Diag::error(p.name.pos, format!("parameter '{}' appears twice", p.name.text)));
             }
-            ps.push((p.name.text.as_str(), k));
+            ps.push((p.name.text, k));
         }
         let sig = FnSig {
             name: &name.text,
@@ -941,7 +941,7 @@ impl<'a> Compiler<'a> {
         self.claim(name, Sym::Func(id))
     }
 
-    pub fn param_kind(&mut self, p: &Param) -> R<ParamKind> {
+    pub fn param_kind(&mut self, p: &Param<'a>) -> R<ParamKind> {
         let elem = self.elem_of(&p.shape)?;
         if p.shape.dims.len() > 1 {
             return Err(Diag::error(p.name.pos, "array parameters have one dimension"));
@@ -993,7 +993,7 @@ impl<'a> Compiler<'a> {
             }
         }
         let mut secs: Vec<(u16, Vec<u8>)> = Vec::new();
-        let meta: Vec<(&str, &str)> = self.prog.meta.iter().map(|(k, v, _)| (k.as_str(), v.as_str())).collect();
+        let meta: Vec<(&str, &str)> = self.prog.meta.iter().map(|(k, v, _)| (*k, *v)).collect();
         secs.push((section::META, write::meta(&meta)));
         secs.push((section::PROGRAM, program));
         secs.push((section::CODE, core::mem::take(&mut self.code)));
