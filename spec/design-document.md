@@ -109,7 +109,7 @@ The cart is the shared project file: it holds the source, the compiled bytecode 
 - **The cart is a complete project.** The computer toolchain unpacks a cart into a folder (source plus one file per asset) and packs it back. There is no separate project format.
 - **Code refers to assets by name** (`Sprites.HERO`, `Sounds.JUMP`). The compiler binds each name to a fixed index, so assets edited on the console show up in the game without recompiling.
 - **The editors are Bidule carts.** The same sprite and sound editors run on the console and in the computer's emulator, so there is one tool to learn. Anyone can write a better editor.
-- **Editors only touch what the user picks.** An editor asks the system to choose a cart and sees only its assets, never its code. Saving can always produce a copy.
+- **Editors modify only what the user allows.** An editor can read any cart's assets, but changing one needs the user's explicit authorization through the system (picking the cart is one). Editors never touch code. Saving can always produce a copy.
 - **Conflicts are visible.** Each asset carries a revision number; packing warns when an asset changed on both sides and keeps both versions.
 - **Assets travel on their own.** An asset-only cart (a sprite set, a sound bank) can be shared by peer exchange and imported into another game.
 
@@ -132,7 +132,7 @@ Because creations arrive from strangers with no one vetting them, the runtime mu
 
 - Cartridges run in the bytecode VM only; no native code from a cartridge.
 - Bytecode is verified before it runs; all memory access is bounds-checked.
-- A cartridge reaches only its own save data and assets, never other cartridges or the system area.
+- A cartridge keeps its save data private and can modify another cartridge's assets only with the user's explicit authorization through the host. It can read other carts' assets, never their save data or the system area.
 - Peer exchange carries data only and never triggers execution on receipt.
 - On desktop and handhelds, the emulator gets no file-system or network access beyond its own folder.
 

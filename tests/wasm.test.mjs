@@ -132,3 +132,73 @@ test("reloading many times is fine", () => {
   const h = makeHarness(core, "sample-sprites");
   for (let i = 0; i < 100; i++) run(h.carts["sample-sprites"].source, { sections: () => h.carts["sample-sprites"].sections });
 });
+
+test("X and Y are reserved: the constants exist and always read as released", () => {
+  const { v } = run("var x = 9\nvar y = 9\ndraw() {\n  cls(btn(BTN_X) + btn(BTN_Y) * 2 + btnp(BTN_X) + 1)\n}\nupdate() {\n  x = BTN_X\n  y = BTN_Y\n}");
+  const drain = t => { const r = t.next(); assert.ok(r.done); };
+  drain(v.initTask());
+  drain(v.frameTask(0, 64 | 128 | 16));                  // X and Y pressed on the pad: bits 6 and 7
+  assert.equal(core.fb[0], 1, "cls(1): both read 0");
+});
+
+test("menuitem and menuchosen are reserved names that can't be called or declared yet", () => {
+  assert.throws(() => run('draw() {\n  menuitem(0, "Save")\n}'), /menuitem\(\) is reserved/);
+  assert.throws(() => run("draw() {\n  var n = menuchosen()\n}"), /menuchosen\(\) is reserved/);
+  assert.throws(() => run("var menuitem = 1"), /reserved/);
+});
+
+test("cartcount, cartinfo and opencart read other carts without a dialog; writes need requestwrite", () => {
+  const src = `
+var h
+var t[65]
+var name[20]
+var wrote
+var allowed
+var n
+var len
+init() {
+  n = cartcount()
+  len = cartinfo(1, name)
+  h = opencart(-1, "tiles")
+  if (h < 0) { h = opencart(1, "tiles") }
+  readasset(h, t, 0)
+  wrote = writeasset(h, t, 0)
+  allowed = requestwrite(h)
+  if (allowed) { wrote = writeasset(h, t, 0) }
+}`;
+  const h = makeHarness(core, "sample-sprites");
+  const c = core.makeWasmVM(src, { debug: true, pointer: h.pointer, sections: () => h.carts["sample-sprites"].sections, cartSections: id => h.carts[id].sections, cartTitle: id => (id === "sample-spark" ? "Spark Catcher" : "x"), cartIds: () => Object.keys(h.carts), projectId: () => null, setProject() {}, runningTitle: () => "T" });
+  const task = c.initTask();
+  let r = task.next();
+  assert.equal(r.value.type, "write", "reading needed no dialog; writing asks the user");
+  assert.equal(r.value.target, "Spark Catcher");
+  assert.equal(c.dirty(), false);
+  r = task.next(true);
+  assert.ok(r.done);
+  assert.equal(c.dirty(), true, "after the user allowed it, the write went through");
+});
+
+test("a refused write request leaves the handle read-only", () => {
+  const src = `
+var h
+var t[65]
+var wrote = 5
+var allowed = 5
+init() {
+  h = opencart(1, "tiles")
+  readasset(h, t, 0)
+  allowed = requestwrite(h)
+  wrote = writeasset(h, t, 0)
+  status("{allowed} {wrote}")
+}`;
+  const h = makeHarness(core, "sample-sprites");
+  const notes = [];
+  const c = core.makeWasmVM(src, { debug: true, pointer: h.pointer, sections: () => h.carts["sample-sprites"].sections, cartSections: id => h.carts[id].sections, cartTitle: () => "T", cartIds: () => Object.keys(h.carts), projectId: () => null, setProject() {}, runningTitle: () => "T", setStatusLine: t => notes.push(t) });
+  const task = c.initTask();
+  let r = task.next();
+  assert.equal(r.value.type, "write");
+  r = task.next(false);
+  assert.ok(r.done);
+  assert.equal(notes.at(-1), "0 -1", "refused: requestwrite is 0 and writeasset reports -1");
+  assert.equal(c.dirty(), false);
+});

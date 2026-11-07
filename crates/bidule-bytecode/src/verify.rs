@@ -215,6 +215,9 @@ fn check_operands(p: &Program, fi: u16, locals: u8, audio: bool, i: &Insn) -> Re
         }
         Op::CALL => {
             let b = builtins::by_id(a as u8).ok_or("no such built-in")?;
+            if b.reserved {
+                return Err("reserved built-in");
+            }
             if i.b < b.min_args || i.b > b.max_args() {
                 return Err("wrong argument count for built-in");
             }

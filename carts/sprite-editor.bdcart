@@ -2,49 +2,75 @@
 // @author Bidule samples
 // @id     sprite-editor
 
-// Edits the tile sheet of any cart on the shelf, and names its sprites.
-// Tap B to move between panels: canvas, sheet, palette, tools.
-// B + left/right: colour   B + up/down: tile   B + A: undo
+// Edits the tile sheet of a cart through the editing API, canvas first.
+// Three panels: tools on the left, the sheet in the middle, colours on the right.
+// B moves between panels, the arrows move inside the focused one and A acts.
 // The mouse works everywhere: click to draw, pick and choose.
+// Start opens the system menu (switch carts, volume, quit).
 
-enum Focus { CANVAS, SHEET, PALETTE, TOOLS }
-enum Tool { PEN, FILL, PICK }
+// panels
+const P_TOOLS = 0
+const P_VIEW = 1
+const P_COLOURS = 2
 
-const Z = 11
-const CX = 6
-const CY = 16
-const PVX = 104
-const PVY = 16
-const PALX = 104
-const PALY = 44
-const TOOLX = 104
-const TOOLY = 68
-const TOOLW = 33
-const FLAGX = 104
-const FLAGY = 98
-const SHX = 6
-const SHY = 116
-const SHCOLS = 16
-const SHROWS = 4
-const PITCH = 9
-const BG = DARK_BLUE
+// tools 0-8 stay selected; 9-14 act at once
+const T_PEN = 0
+const T_ERASE = 1
+const T_FILL = 2
+const T_PICK = 3
+const T_LINE = 4
+const T_RECT = 5
+const T_SEL = 6
+const T_MOVE = 7
+const T_HAND = 8
+const T_ZIN = 9
+const T_ZOUT = 10
+const T_UNDO = 11
+const T_NAME = 12
+const T_OPEN = 13
+const T_SAVE = 14
+const NT = 15
+const NDRAW = 9
 
-// tools 0-6, then flags 7-14
-const NTOOLS = 7
-const NITEMS = 15
-const TOOL_NAMES[7][4] = {
-  "PEN ",
-  "FILL",
-  "PICK",
-  "UNDO",
-  "NAME",
-  "OPEN",
-  "SAVE",
+const TOOL_NAMES[15][3] = {
+  "PEN",
+  "ERA",
+  "FIL",
+  "PIK",
+  "LIN",
+  "REC",
+  "SEL",
+  "MOV",
+  "HND",
+  "Z+ ",
+  "Z- ",
+  "UND",
+  "NAM",
+  "OPN",
+  "SAV",
 }
 
-// name panel: 37 characters, then DEL and OK
+// layout
+const VX = 24
+const VY = 3
+const VWP = 192
+const VHP = 144
+const TBX = 1
+const TBY = 3
+const TBW = 21
+const TBP = 9
+const CLX = 219
+const CLY = 3
+const CLW = 20
+const CLH = 8
+const CLP = 9
+const BG = DARK_BLUE
+
+// zoom levels: 0 is the tile overview, the others edit pixels
+const NZ = 5
+const MAXSEL = 16
+const NNAME = 37
 const CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
-const NCHARS = 37
 const NCELLS = 39
 const NPX = 14
 const NPY = 22
@@ -52,40 +78,82 @@ const NCOLS = 10
 
 var h = -1
 var sh = -1
+var ro = 0
 var title[17]
-var px[65]
-var und[65]
-var tmp[65]
-var rec[4]
-var stk[64]
 var tile = 0
+var tool = 0
+var lasttool = 0
+var toolsel = 0
+var colour = 7
+var focus = P_VIEW
+
+// view: the cursor and the part of the sheet shown (in pixels)
 var cx = 0
 var cy = 0
-var colour = 7
-var tool = Tool.PEN
-var focus = Focus.CANVAS
-var toolsel = 0
-var dirty = 0
+var vx = 0
+var vy = 0
+var vw = 16
+var vh = 12
+var zi = 3
+var z = 12
+
+// the tiles under the view, up to 5x4, kept in RAM while editing
+var win[1300]
+var wdirty[20]
+var wtx = 0
+var wty = 0
+var wtw = 0
+var wth = 0
+var wvalid = 0
+var tb[65]
+var tc[65]
+
+// undo: the tiles changed by the last action
+var ulog_id[20]
+var ulog_d[1280]
+var ulog_n = 0
+
+// tool state
+var stroke = 0
+var mdrag = 0
+var lastx = 0
+var lasty = 0
+var anchor = 0
+var ax = 0
+var ay = 0
+var sel_on = 0
+var selecting = 0
+var sx0 = 0
+var sy0 = 0
+var sx1 = 0
+var sy1 = 0
+var fl_on = 0
+var flx = 0
+var fly = 0
+var flw = 0
+var flh = 0
+var fl[256]
+var stk[384]
+var sn = 0
+var plot_mode = 0
+var pcol = 0
+
 var unsaved = 0
 var open_armed = 0
-var wx = 0
-var wy = 0
 var held[4]
 var rp[4]
-var bdown = 0
-var bused = 0
 var mprev = 0
 var redraw_all = 1
-var redraw_sheet = 1
-var thumb = 0
-var seldrawn = -1
+var redraw_view = 1
 var msg[48]
+var hint[48]
 var msgtime = 0
 
-// sprite name of the current tile
+// sprite name of the tile under the cursor
 var sslot = -1
 var sname[25]
 var other[25]
+var rec[4]
 
 // name panel
 var naming = 0
@@ -100,51 +168,443 @@ fn say(text[]) {
   msgtime = 180
 }
 
-// ---------- tiles ----------
+// ---------- the tiles under the view ----------
 
-fn load() {
-  readasset(h, px, tile)
-  copy(und, px)
-  dirty = 0
-  find_sprite()
+fn zoom_of(i) {
+  if (i == 0) { return 1 }
+  if (i == 1) { return 6 }
+  if (i == 2) { return 8 }
+  if (i == 3) { return 12 }
+  return 16
 }
 
-fn keep() {
-  if (dirty) {
-    writeasset(h, px, tile)
-    dirty = 0
-    unsaved = 1
+fn slot(tx, ty) {
+  if (tx < wtx || ty < wty || tx >= wtx + wtw || ty >= wty + wth) { return -1 }
+  return (ty - wty) * wtw + (tx - wtx)
+}
+
+// writes the changed tiles back to the cart's sheet
+fn flush_win() {
+  var n = wtw * wth
+  for (var k = 0; k < n; k++) {
+    if (wdirty[k]) {
+      var t = (wty + k / wtw) * 32 + wtx + k % wtw
+      for (var i = 0; i < 65; i++) {
+        tb[i] = win[k * 65 + i]
+      }
+      writeasset(h, tb, t)
+      wdirty[k] = 0
+      unsaved = 1
+    }
   }
 }
 
-fn select(t) {
-  t = (t + 1024) % 1024
-  if (t == tile) { return }
-  keep()
-  tile = t
-  load()
-  var col = tile % 32
-  var row = tile / 32
-  var nwx = (col / SHCOLS) * SHCOLS
-  var nwy = wy
-  if (row < wy) { nwy = row }
-  if (row >= wy + SHROWS) { nwy = row - SHROWS + 1 }
-  if (nwx != wx || nwy != wy) {
-    wx = nwx
-    wy = nwy
-    redraw_sheet = 1
+fn load_win() {
+  flush_win()
+  if (zi == 0) {
+    wtw = 0
+    wth = 0
+    wvalid = 0
+    return
+  }
+  var tx0 = vx / 8
+  var ty0 = vy / 8
+  var tw = (vx + vw - 1) / 8 - tx0 + 1
+  var th = (vy + vh - 1) / 8 - ty0 + 1
+  if (wvalid && tx0 == wtx && ty0 == wty && tw == wtw && th == wth) { return }
+  wtx = tx0
+  wty = ty0
+  wtw = tw
+  wth = th
+  for (var k = 0; k < tw * th; k++) {
+    readasset(h, tb, (wty + k / wtw) * 32 + wtx + k % wtw)
+    for (var i = 0; i < 65; i++) {
+      win[k * 65 + i] = tb[i]
+    }
+    wdirty[k] = 0
+  }
+  wvalid = 1
+}
+
+// pixel of the sheet, or -1 outside the loaded tiles
+fn getpx(x, y) {
+  if (x < 0 || y < 0 || x > 255 || y > 255) { return -1 }
+  var k = slot(x / 8, y / 8)
+  if (k < 0) { return -1 }
+  return win[k * 65 + (y % 8) * 8 + x % 8]
+}
+
+fn log_tile(t, k) {
+  for (var i = 0; i < ulog_n; i++) {
+    if (ulog_id[i] == t) { return }
+  }
+  if (ulog_n >= 20) { return }
+  ulog_id[ulog_n] = t
+  for (var i = 0; i < 64; i++) {
+    ulog_d[ulog_n * 64 + i] = win[k * 65 + i]
+  }
+  ulog_n++
+}
+
+fn setpx(x, y, c) {
+  if (x < 0 || y < 0 || x > 255 || y > 255) { return }
+  var k = slot(x / 8, y / 8)
+  if (k < 0) { return }
+  var i = k * 65 + (y % 8) * 8 + x % 8
+  if (win[i] == c) { return }
+  log_tile((y / 8) * 32 + x / 8, k)
+  win[i] = c
+  wdirty[k] = 1
+  redraw_view = 1
+}
+
+// the next action starts a new undo step
+fn begin_op() {
+  ulog_n = 0
+}
+
+// swaps the logged tiles with the sheet: undo twice is redo
+fn undo() {
+  flush_win()
+  if (ulog_n == 0) {
+    say("Nothing to undo")
+    return
+  }
+  for (var n = 0; n < ulog_n; n++) {
+    readasset(h, tb, ulog_id[n])
+    for (var i = 0; i < 64; i++) {
+      tc[i] = ulog_d[n * 64 + i]
+      ulog_d[n * 64 + i] = tb[i]
+    }
+    tc[64] = tb[64]
+    writeasset(h, tc, ulog_id[n])
+  }
+  unsaved = 1
+  wvalid = 0
+  load_win()
+  redraw_view = 1
+  say("Undo")
+}
+
+// ---------- drawing tools ----------
+
+fn can_edit() {
+  if (ro) {
+    say("Read only: not allowed to edit")
+    return 0
+  }
+  return 1
+}
+
+// plot_mode 0 changes the sheet, 1 only outlines the pixels in the view
+fn put(x, y) {
+  if (plot_mode == 0) {
+    setpx(x, y, pcol)
+  } else if (x >= vx && y >= vy && x < vx + vw && y < vy + vh) {
+    rect(VX + (x - vx) * z, VY + (y - vy) * z, z, z, YELLOW)
   }
 }
 
-fn scroll(dr, side) {
-  wy = clamp(wy + dr, 0, 32 - SHROWS)
-  if (side) { wx = SHCOLS - wx }
-  redraw_sheet = 1
+fn plot_line(x0, y0, x1, y1) {
+  var dx = abs(x1 - x0)
+  var dy = -abs(y1 - y0)
+  var sx = 1
+  if (x0 > x1) { sx = -1 }
+  var sy = 1
+  if (y0 > y1) { sy = -1 }
+  var e = dx + dy
+  for (var n = 0; n < 600; n++) {
+    put(x0, y0)
+    if (x0 == x1 && y0 == y1) { return }
+    var e2 = 2 * e
+    if (e2 >= dy) {
+      e += dy
+      x0 += sx
+    }
+    if (e2 <= dx) {
+      e += dx
+      y0 += sy
+    }
+  }
 }
 
-// ---------- sprites: a name for the current tile ----------
+fn plot_rect(x0, y0, x1, y1) {
+  var a = min(x0, x1)
+  var b = max(x0, x1)
+  var c = min(y0, y1)
+  var d = max(y0, y1)
+  for (var x = a; x <= b; x++) {
+    put(x, c)
+    put(x, d)
+  }
+  for (var y = c; y <= d; y++) {
+    put(a, y)
+    put(b, y)
+  }
+}
 
-// Finds the 1x1 sprite slot that shows the current tile.
+fn fill_push(x, y, target) {
+  if (sn < 384 && getpx(x, y) == target) {
+    setpx(x, y, colour)
+    stk[sn] = y * 256 + x
+    sn++
+  }
+}
+
+// flood fill inside the loaded tiles
+fn flood(x, y) {
+  var target = getpx(x, y)
+  if (target < 0 || target == colour) { return }
+  sn = 0
+  fill_push(x, y, target)
+  while (sn > 0) {
+    sn--
+    var p = stk[sn]
+    var qx = p % 256
+    var qy = p / 256
+    fill_push(qx - 1, qy, target)
+    fill_push(qx + 1, qy, target)
+    fill_push(qx, qy - 1, target)
+    fill_push(qx, qy + 1, target)
+  }
+}
+
+fn set_sel(x0, y0, x1, y1) {
+  sx0 = min(x0, x1)
+  sy0 = min(y0, y1)
+  sx1 = max(x0, x1)
+  sy1 = max(y0, y1)
+  sel_on = 1
+}
+
+// lifts the selection into a floating copy that moves with the cursor
+fn lift() {
+  if (!sel_on) {
+    say("Select first with SEL")
+    return
+  }
+  if (sx0 < vx || sy0 < vy || sx1 >= vx + vw || sy1 >= vy + vh) {
+    say("Selection is off screen: zoom out")
+    return
+  }
+  begin_op()
+  flw = sx1 - sx0 + 1
+  flh = sy1 - sy0 + 1
+  for (var j = 0; j < flh; j++) {
+    for (var i = 0; i < flw; i++) {
+      fl[j * flw + i] = getpx(sx0 + i, sy0 + j)
+      setpx(sx0 + i, sy0 + j, 0)
+    }
+  }
+  flx = sx0
+  fly = sy0
+  cx = flx
+  cy = fly
+  fl_on = 1
+  redraw_view = 1
+  say("Lifted: arrows move, A drops")
+}
+
+fn drop() {
+  if (!fl_on) { return }
+  for (var j = 0; j < flh; j++) {
+    for (var i = 0; i < flw; i++) {
+      var c = fl[j * flw + i]
+      if (c != 0) { setpx(flx + i, fly + j, c) }
+    }
+  }
+  set_sel(flx, fly, flx + flw - 1, fly + flh - 1)
+  fl_on = 0
+  redraw_view = 1
+}
+
+// ---------- the view ----------
+
+fn follow() {
+  if (zi == 0) {
+    if (cx < vx) { vx = cx }
+    if (cx >= vx + vw) { vx = cx - vw + 8 }
+    if (cy < vy) { vy = cy }
+    if (cy >= vy + vh) { vy = cy - vh + 8 }
+    vx = clamp(vx, 0, 64)
+    vy = clamp(vy, 0, 112)
+  } else {
+    var mx = min(2, vw / 4)
+    var my = min(2, vh / 4)
+    if (cx < vx + mx) { vx = cx - mx }
+    if (cx > vx + vw - 1 - mx) { vx = cx - vw + 1 + mx }
+    if (cy < vy + my) { vy = cy - my }
+    if (cy > vy + vh - 1 - my) { vy = cy - vh + 1 + my }
+    vx = clamp(vx, 0, 256 - vw)
+    vy = clamp(vy, 0, 256 - vh)
+  }
+  load_win()
+  redraw_view = 1
+}
+
+fn zoom_say() {
+  if (zi == 0) {
+    say("Overview: arrows move by tile, A zooms in")
+  } else {
+    fmt(msg, "Zoom x{z}")
+    msgtime = 90
+  }
+}
+
+fn set_zoom(n) {
+  n = clamp(n, 0, NZ - 1)
+  if (n == zi) {
+    zoom_say()
+    return
+  }
+  var was = zi
+  zi = n
+  z = zoom_of(n)
+  vw = VWP / z
+  vh = VHP / z
+  if (zi == 0) {
+    cx = cx / 8 * 8
+    cy = cy / 8 * 8
+    vx = clamp(cx - 96, 0, 64) / 8 * 8
+    vy = clamp(cy - 72, 0, 112) / 8 * 8
+  } else {
+    if (was == 0) {
+      cx += 4
+      cy += 4
+    }
+    vx = clamp(cx - vw / 2, 0, 256 - vw)
+    vy = clamp(cy - vh / 2, 0, 256 - vh)
+  }
+  load_win()
+  redraw_view = 1
+  zoom_say()
+}
+
+// moves the cursor (or the floating selection, or the view with HAND)
+fn move_cursor(dx, dy) {
+  if (zi == 0) {
+    cx = clamp(cx + dx * 8, 0, 248)
+    cy = clamp(cy + dy * 8, 0, 248)
+    follow()
+    return
+  }
+  if (tool == T_HAND && !fl_on) {
+    vx = clamp(vx + dx * 4, 0, 256 - vw)
+    vy = clamp(vy + dy * 4, 0, 256 - vh)
+    cx = clamp(cx, vx, vx + vw - 1)
+    cy = clamp(cy, vy, vy + vh - 1)
+    load_win()
+    redraw_view = 1
+    return
+  }
+  if (fl_on) {
+    var fx = flx + dx
+    var fy = fly + dy
+    if (fx >= vx && fy >= vy && fx + flw <= vx + vw && fy + flh <= vy + vh) {
+      flx = fx
+      fly = fy
+      cx = fx
+      cy = fy
+      redraw_view = 1
+    }
+    return
+  }
+  var nx = clamp(cx + dx, 0, 255)
+  var ny = clamp(cy + dy, 0, 255)
+  if (selecting && (abs(nx - ax) >= MAXSEL || abs(ny - ay) >= MAXSEL)) { return }
+  cx = nx
+  cy = ny
+  if (selecting) { set_sel(ax, ay, cx, cy) }
+  if (stroke && btn(BTN_A)) {
+    plot_mode = 0
+    pcol = colour
+    if (tool == T_ERASE) { pcol = 0 }
+    plot_line(lastx, lasty, cx, cy)
+    lastx = cx
+    lasty = cy
+  }
+  follow()
+}
+
+fn use_tool(i) {
+  if (fl_on && i != T_MOVE) { drop() }
+  if (i == T_PICK && tool != T_PICK) { lasttool = tool }
+  tool = i
+  anchor = 0
+  selecting = 0
+  redraw_view = 1
+}
+
+// A in the view
+fn press() {
+  if (zi == 0) {
+    set_zoom(3)
+    return
+  }
+  if (tool == T_PEN || tool == T_ERASE) {
+    if (!can_edit()) { return }
+    begin_op()
+    stroke = 1
+    lastx = cx
+    lasty = cy
+    pcol = colour
+    if (tool == T_ERASE) { pcol = 0 }
+    plot_mode = 0
+    setpx(cx, cy, pcol)
+  } else if (tool == T_FILL) {
+    if (!can_edit()) { return }
+    begin_op()
+    flood(cx, cy)
+  } else if (tool == T_PICK) {
+    var c = getpx(cx, cy)
+    if (c >= 0) { colour = c }
+    tool = lasttool
+    fmt(msg, "Colour {colour}")
+    msgtime = 90
+  } else if (tool == T_LINE || tool == T_RECT) {
+    if (!anchor) {
+      anchor = 1
+      ax = cx
+      ay = cy
+      say("A again for the end point")
+    } else {
+      if (!can_edit()) { return }
+      begin_op()
+      plot_mode = 0
+      pcol = colour
+      if (tool == T_LINE) {
+        plot_line(ax, ay, cx, cy)
+      } else {
+        plot_rect(ax, ay, cx, cy)
+      }
+      anchor = 0
+    }
+  } else if (tool == T_SEL) {
+    if (!selecting) {
+      selecting = 1
+      ax = cx
+      ay = cy
+      set_sel(cx, cy, cx, cy)
+      say("Arrows grow it, A ends (max 16x16)")
+    } else {
+      selecting = 0
+      fmt(msg, "Selected {sx1 - sx0 + 1}x{sy1 - sy0 + 1}")
+      msgtime = 90
+    }
+  } else if (tool == T_MOVE) {
+    if (fl_on) {
+      drop()
+      say("Dropped")
+    } else {
+      if (!can_edit()) { return }
+      lift()
+    }
+  }
+  redraw_view = 1
+}
+
+// ---------- sprites: a name for the tile under the cursor ----------
+
 fn find_sprite() {
   sslot = -1
   sname[0] = 0
@@ -172,6 +632,9 @@ fn name_taken() {
 }
 
 fn open_naming() {
+  if (!can_edit()) { return }
+  tile = (cy / 8) * 32 + cx / 8
+  find_sprite()
   copy(nm, sname)
   nlen = 0
   while (nm[nlen] != 0) { nlen++ }
@@ -206,7 +669,6 @@ fn commit_name() {
     sslot = assetcount(sh) - 1
   }
   setassetname(sh, sslot, nm)
-  copy(sname, nm)
   unsaved = 1
   if (nlen > 0) {
     fmt(msg, "Tile {tile} is Sprites.{nm}")
@@ -218,13 +680,13 @@ fn commit_name() {
 }
 
 fn name_key(k) {
-  if (k < NCHARS) {
+  if (k < NNAME) {
     if (nlen < 24) {
       nm[nlen] = CHARS[k]
       nlen++
       nm[nlen] = 0
     }
-  } else if (k == NCHARS) {
+  } else if (k == NNAME) {
     if (nlen > 0) {
       nlen--
       nm[nlen] = 0
@@ -236,7 +698,6 @@ fn name_key(k) {
 
 fn name_input() {
   if (btnp(BTN_B)) {
-    bused = 1
     close_naming()
     return
   }
@@ -263,100 +724,51 @@ fn name_input() {
   }
 }
 
-// ---------- drawing on the tile ----------
-
-fn setpx(x, y, c) {
-  if (px[y * 8 + x] != c) {
-    px[y * 8 + x] = c
-    dirty = 1
-    thumb = 1
-  }
-}
-
-fn fill(x, y) {
-  var target = px[y * 8 + x]
-  if (target == colour) { return }
-  var n = 1
-  stk[0] = y * 8 + x
-  px[y * 8 + x] = colour
-  while (n > 0) {
-    n--
-    var p = stk[n]
-    if (p % 8 > 0 && px[p - 1] == target) {
-      px[p - 1] = colour
-      stk[n] = p - 1
-      n++
-    }
-    if (p % 8 < 7 && px[p + 1] == target) {
-      px[p + 1] = colour
-      stk[n] = p + 1
-      n++
-    }
-    if (p >= 8 && px[p - 8] == target) {
-      px[p - 8] = colour
-      stk[n] = p - 8
-      n++
-    }
-    if (p < 56 && px[p + 8] == target) {
-      px[p + 8] = colour
-      stk[n] = p + 8
-      n++
-    }
-  }
-  dirty = 1
-  thumb = 1
-}
-
-fn begin() {
-  if (tool != Tool.PICK) { copy(und, px) }
-}
-
-fn apply(x, y, pressed) {
-  switch (tool) {
-    Tool.PEN { setpx(x, y, colour) }
-    Tool.FILL {
-      if (pressed) { fill(x, y) }
-    }
-    Tool.PICK {
-      if (pressed) {
-        colour = px[y * 8 + x]
-        tool = Tool.PEN
-      }
-    }
-  }
-}
-
-fn undo() {
-  copy(tmp, px)
-  copy(px, und)
-  copy(und, tmp)
-  dirty = 1
-  thumb = 1
-}
-
 // ---------- cart ----------
 
-fn open() {
-  var picked = pickcart("tiles")
+// Opens the current project (or asks which cart) and asks to be allowed to edit it.
+fn open(ask) {
+  var picked = -1
+  if (!ask) { picked = opencart(-1, "tiles") }
+  if (picked < 0) { picked = pickcart("tiles") }
   redraw_all = 1
   if (picked < 0) {
     say("No cart opened")
     return
   }
   h = picked
+  ro = 0
+  if (!requestwrite(h)) { ro = 1 }
   sh = opensection(h, "sprites")
   cartname(h, title)
-  tile = 0
-  wx = 0
-  wy = 0
+  cx = 0
+  cy = 0
   unsaved = 0
-  load()
-  fmt(msg, "Editing {assetcount(h)} tiles")
-  msgtime = 180
+  ulog_n = 0
+  wvalid = 0
+  fl_on = 0
+  sel_on = 0
+  selecting = 0
+  anchor = 0
+  stroke = 0
+  zi = 3
+  z = 12
+  vw = VWP / z
+  vh = VHP / z
+  vx = 0
+  vy = 0
+  load_win()
+  redraw_view = 1
+  if (ro) {
+    say("Opened read only")
+  } else {
+    say("Editing")
+  }
 }
 
 fn save() {
-  keep()
+  if (!can_edit()) { return }
+  flush_win()
   if (savecart(h)) {
     unsaved = 0
     cartname(h, title)
@@ -368,36 +780,31 @@ fn save() {
 }
 
 fn act(i) {
-  if (i != 5) { open_armed = 0 }
-  if (i < 3) {
-    tool = i
+  if (i != T_OPEN) { open_armed = 0 }
+  if (i < NDRAW) {
+    use_tool(i)
     return
   }
-  if (i == 3) {
-    undo()
-    return
-  }
-  if (i == 4) {
+  if (i == T_ZIN) {
+    set_zoom(zi + 1)
+  } else if (i == T_ZOUT) {
+    set_zoom(zi - 1)
+  } else if (i == T_UNDO) {
+    if (can_edit()) { undo() }
+  } else if (i == T_NAME) {
     open_naming()
-    return
-  }
-  if (i == 5) {
-    if ((unsaved || dirty) && !open_armed) {
+  } else if (i == T_OPEN) {
+    flush_win()
+    if (unsaved && !open_armed) {
       open_armed = 1
-      fmt(msg, "Unsaved! OPEN again to discard")
-      msgtime = 240
+      say("Unsaved! OPN again to discard")
       return
     }
     open_armed = 0
-    open()
-    return
-  }
-  if (i == 6) {
+    open(1)
+  } else if (i == T_SAVE) {
     save()
-    return
   }
-  px[64] = px[64] ^ (1 << (i - NTOOLS))
-  dirty = 1
 }
 
 // ---------- input ----------
@@ -412,51 +819,26 @@ fn rep(b) {
 }
 
 fn navigate() {
-  switch (focus) {
-    Focus.CANVAS {
-      if (rp[BTN_LEFT])  { cx = (cx + 7) % 8 }
-      if (rp[BTN_RIGHT]) { cx = (cx + 1) % 8 }
-      if (rp[BTN_UP])    { cy = (cy + 7) % 8 }
-      if (rp[BTN_DOWN])  { cy = (cy + 1) % 8 }
-      if (btnp(BTN_A)) { begin() }
-      if (btn(BTN_A)) { apply(cx, cy, btnp(BTN_A)) }
+  var dx = 0
+  var dy = 0
+  if (rp[BTN_LEFT])  { dx = -1 }
+  if (rp[BTN_RIGHT]) { dx = 1 }
+  if (rp[BTN_UP])    { dy = -1 }
+  if (rp[BTN_DOWN])  { dy = 1 }
+  if (focus == P_VIEW) {
+    if (dx != 0 || dy != 0) { move_cursor(dx, dy) }
+    if (btnp(BTN_A)) { press() }
+    if (!btn(BTN_A) && !mdrag) { stroke = 0 }
+  } else if (focus == P_TOOLS) {
+    if (dy != 0) { toolsel = (toolsel + NT + dy) % NT }
+    if (btnp(BTN_A)) {
+      act(toolsel)
+      if (toolsel < NDRAW) { focus = P_VIEW }
     }
-    Focus.SHEET {
-      if (rp[BTN_LEFT])  { select(tile - 1) }
-      if (rp[BTN_RIGHT]) { select(tile + 1) }
-      if (rp[BTN_UP])    { select(tile - 32) }
-      if (rp[BTN_DOWN])  { select(tile + 32) }
-      if (btnp(BTN_A)) { focus = Focus.CANVAS }
-    }
-    Focus.PALETTE {
-      if (rp[BTN_LEFT])  { colour = (colour + 15) % 16 }
-      if (rp[BTN_RIGHT]) { colour = (colour + 1) % 16 }
-      if (rp[BTN_UP] || rp[BTN_DOWN]) { colour = (colour + 8) % 16 }
-      if (btnp(BTN_A)) { focus = Focus.CANVAS }
-    }
-    Focus.TOOLS {
-      if (rp[BTN_LEFT])  { toolsel = (toolsel + NITEMS - 1) % NITEMS }
-      if (rp[BTN_RIGHT]) { toolsel = (toolsel + 1) % NITEMS }
-      if (rp[BTN_UP]) {
-        if (toolsel >= NTOOLS) {
-          toolsel = 4
-        } else if (toolsel >= 4) {
-          toolsel = toolsel - 4
-        } else {
-          toolsel = NTOOLS
-        }
-      }
-      if (rp[BTN_DOWN]) {
-        if (toolsel < 4) {
-          toolsel = min(toolsel + 4, NTOOLS - 1)
-        } else if (toolsel < NTOOLS) {
-          toolsel = NTOOLS
-        } else {
-          toolsel = 0
-        }
-      }
-      if (btnp(BTN_A)) { act(toolsel) }
-    }
+  } else {
+    if (dy != 0) { colour = (colour + 16 + dy) % 16 }
+    if (dx != 0) { colour = (colour + 16 + dx * 8) % 16 }
+    if (btnp(BTN_A)) { focus = P_VIEW }
   }
 }
 
@@ -469,48 +851,58 @@ fn mouse() {
   var b = mouseb() & 1
   var pressed = b && !mprev
   mprev = b
-  if (!b) { return }
+  if (!b) {
+    if (mdrag) {
+      mdrag = 0
+      stroke = 0
+    }
+    return
+  }
   var mx = mousex()
   var my = mousey()
-  if (inside(mx, my, CX, CY, 8 * Z, 8 * Z)) {
-    cx = (mx - CX) / Z
-    cy = (my - CY) / Z
-    focus = Focus.CANVAS
-    if (pressed) { begin() }
-    apply(cx, cy, pressed)
+  if (inside(mx, my, VX, VY, VWP, VHP)) {
+    var nx = vx + (mx - VX) / z
+    var ny = vy + (my - VY) / z
+    if (zi == 0) {
+      nx = nx / 8 * 8
+      ny = ny / 8 * 8
+    }
+    if (pressed) {
+      cx = nx
+      cy = ny
+      focus = P_VIEW
+      redraw_view = 1
+      press()
+      mdrag = stroke
+    } else if (mdrag && (nx != cx || ny != cy)) {
+      cx = nx
+      cy = ny
+      plot_mode = 0
+      pcol = colour
+      if (tool == T_ERASE) { pcol = 0 }
+      plot_line(lastx, lasty, cx, cy)
+      lastx = cx
+      lasty = cy
+      redraw_view = 1
+    }
     return
   }
   if (!pressed) { return }
-  if (inside(mx, my, PALX, PALY, 88, 18)) {
-    colour = (my - PALY) / 9 * 8 + (mx - PALX) / 11
-    focus = Focus.PALETTE
-  } else if (inside(mx, my, TOOLX, TOOLY, 4 * TOOLW, 26)) {
-    var t = (my - TOOLY) / 13 * 4 + (mx - TOOLX) / TOOLW
-    if (t < NTOOLS) {
-      toolsel = t
-      focus = Focus.TOOLS
-      act(t)
-    }
-  } else if (inside(mx, my, FLAGX + 36, FLAGY, 80, 9)) {
-    toolsel = NTOOLS + (mx - FLAGX - 36) / 10
-    focus = Focus.TOOLS
+  if (inside(mx, my, TBX, TBY, TBW, NT * TBP)) {
+    toolsel = (my - TBY) / TBP
     act(toolsel)
-  } else if (inside(mx, my, SHX, SHY, SHCOLS * PITCH, SHROWS * PITCH)) {
-    focus = Focus.SHEET
-    select((wy + (my - SHY) / PITCH) * 32 + wx + (mx - SHX) / PITCH)
-  } else if (inside(mx, my, 156, 128, 24, 11)) {
-    scroll(-SHROWS, 0)
-  } else if (inside(mx, my, 182, 128, 24, 11)) {
-    scroll(SHROWS, 0)
-  } else if (inside(mx, my, 208, 128, 24, 11)) {
-    scroll(0, 1)
+    focus = P_VIEW
+  } else if (inside(mx, my, CLX, CLY, CLW, 16 * CLP)) {
+    colour = (my - CLY) / CLP
+    focus = P_VIEW
+    redraw_view = 1
   }
 }
 
 // ---------- lifecycle ----------
 
 init() {
-  open()
+  open(0)
 }
 
 update() {
@@ -519,98 +911,110 @@ update() {
   }
   if (msgtime > 0) { msgtime-- }
   if (h < 0) {
-    if (btnp(BTN_A)) { open() }
-    mouse()
-    bdown = btn(BTN_B)
+    if (btnp(BTN_A)) { open(0) }
     return
   }
   if (naming) {
     name_input()
-    bdown = btn(BTN_B)
     return
   }
-  if (btn(BTN_B)) {
-    if (btnp(BTN_B)) { bused = 0 }
-    if (rp[BTN_LEFT]) {
-      colour = (colour + 15) % 16
-      bused = 1
-    }
-    if (rp[BTN_RIGHT]) {
-      colour = (colour + 1) % 16
-      bused = 1
-    }
-    if (rp[BTN_UP]) {
-      select(tile - 1)
-      bused = 1
-    }
-    if (rp[BTN_DOWN]) {
-      select(tile + 1)
-      bused = 1
-    }
-    if (btnp(BTN_A)) {
-      undo()
-      bused = 1
-    }
+  if (btnp(BTN_B)) {
+    focus = (focus + 1) % 3
+    redraw_view = 1
   } else {
-    if (bdown && !bused) { focus = (focus + 1) % 4 }
     navigate()
   }
   mouse()
-  bdown = btn(BTN_B)
+  flush_win()
 }
 
 // ---------- drawing ----------
 
-fn draw_tile(t, x, y) {
-  if (t == tile) {
-    for (var j = 0; j < 8; j++) {
-      for (var i = 0; i < 8; i++) {
-        pset(x + i, y + j, px[j * 8 + i])
+fn draw_overview() {
+  rectfill(VX, VY, VWP, VHP, BLACK)
+  var t0 = (vy / 8) * 32 + vx / 8
+  for (var j = 0; j < 18; j++) {
+    for (var i = 0; i < 24; i++) {
+      drawasset(h, t0 + j * 32 + i, VX + i * 8, VY + j * 8)
+    }
+  }
+  if (sel_on) {
+    rect(VX + sx0 - vx, VY + sy0 - vy, sx1 - sx0 + 1, sy1 - sy0 + 1, YELLOW)
+  }
+  var edge = GREY
+  if (focus == P_VIEW) { edge = WHITE }
+  rect(VX + cx - vx - 1, VY + cy - vy - 1, 10, 10, edge)
+}
+
+fn draw_view() {
+  if (zi == 0) {
+    draw_overview()
+    return
+  }
+  var pad = 0
+  if (z >= 8) { pad = 1 }
+  rectfill(VX, VY, VWP, VHP, BG)
+  for (var j = 0; j < vh; j++) {
+    for (var i = 0; i < vw; i++) {
+      var c = getpx(vx + i, vy + j)
+      if (c <= 0) {
+        c = BLACK
+        if ((vx + i + vy + j) % 2 == 0) { c = DARK_GREY }
+      }
+      rectfill(VX + i * z, VY + j * z, z - pad, z - pad, c)
+    }
+  }
+  if (fl_on) {
+    for (var j = 0; j < flh; j++) {
+      for (var i = 0; i < flw; i++) {
+        var c = fl[j * flw + i]
+        if (c != 0) {
+          rectfill(VX + (flx + i - vx) * z, VY + (fly + j - vy) * z, z - pad, z - pad, c)
+        }
       }
     }
-  } else {
-    rectfill(x, y, 8, 8, BLACK)
-    drawasset(h, t, x, y)
   }
-}
-
-fn mark(t, c) {
-  var col = t % 32 - wx
-  var row = t / 32 - wy
-  if (col >= 0 && col < SHCOLS && row >= 0 && row < SHROWS) {
-    rect(SHX + col * PITCH - 1, SHY + row * PITCH - 1, 10, 10, c)
+  if (sel_on) {
+    rect(VX + (sx0 - vx) * z - 1, VY + (sy0 - vy) * z - 1, (sx1 - sx0 + 1) * z + 1, (sy1 - sy0 + 1) * z + 1, YELLOW)
   }
-}
-
-fn draw_sheet() {
-  rectfill(SHX - 2, SHY - 2, SHCOLS * PITCH + 3, SHROWS * PITCH + 3, BLACK)
-  for (var r = 0; r < SHROWS; r++) {
-    for (var c = 0; c < SHCOLS; c++) {
-      draw_tile((wy + r) * 32 + wx + c, SHX + c * PITCH, SHY + r * PITCH)
+  if (anchor) {
+    plot_mode = 1
+    if (tool == T_LINE) {
+      plot_line(ax, ay, cx, cy)
+    } else {
+      plot_rect(ax, ay, cx, cy)
     }
+    plot_mode = 0
   }
-  seldrawn = -1
-  redraw_sheet = 0
-  thumb = 0
-}
-
-fn draw_static() {
-  cls(BG)
-  rectfill(CX - 2, CY - 2, 8 * Z + 3, 8 * Z + 3, BLACK)
-  print("COLOUR", PALX, PALY - 10, GREY)
-  print("FLAGS", FLAGX, FLAGY + 1, GREY)
-  rectfill(156, 128, 24, 11, DARK_GREY)
-  rectfill(182, 128, 24, 11, DARK_GREY)
-  rectfill(208, 128, 24, 11, DARK_GREY)
-  print("UP", 162, 129, WHITE)
-  print("DN", 188, 129, WHITE)
-  print("<>", 214, 129, WHITE)
-  redraw_sheet = 1
-  redraw_all = 0
+  var edge = GREY
+  if (focus == P_VIEW) { edge = WHITE }
+  rect(VX + (cx - vx) * z - 1, VY + (cy - vy) * z - 1, z + 1, z + 1, edge)
 }
 
 fn frame_around(x, y, w, hh, on) {
   rect(x, y, w, hh, on ? YELLOW : BG)
+}
+
+fn draw_ui() {
+  for (var i = 0; i < NT; i++) {
+    var y = TBY + i * TBP
+    var bg = DARK_GREY
+    if (i == tool) { bg = BLUE }
+    rectfill(TBX, y, TBW, TBP - 1, bg)
+    var fg = WHITE
+    if (focus == P_TOOLS && i == toolsel) { fg = YELLOW }
+    print(TOOL_NAMES[i], TBX + 2, y - 1, fg)
+  }
+  rect(TBX - 1, TBY - 1, TBW + 2, NT * TBP + 1, focus == P_TOOLS ? YELLOW : BG)
+  if (focus == P_TOOLS) {
+    rect(TBX, TBY + toolsel * TBP - 1, TBW, TBP + 1, YELLOW)
+  }
+  for (var i = 0; i < 16; i++) {
+    var y = CLY + i * CLP
+    rectfill(CLX, y, CLW, CLH, i)
+    rect(CLX - 1, y - 1, CLW + 2, CLH + 2, i == colour ? WHITE : BG)
+  }
+  rect(CLX - 2, CLY - 2, CLW + 4, 16 * CLP + 2, focus == P_COLOURS ? YELLOW : BG)
 }
 
 fn draw_naming(frame) {
@@ -625,14 +1029,14 @@ fn draw_naming(frame) {
     var cx2 = NPX + 6 + (k % NCOLS) * 20
     var cy2 = NPY + 34 + (k / NCOLS) * 12
     var bg = DARK_GREY
-    if (k >= NCHARS) { bg = BLUE }
+    if (k >= NNAME) { bg = BLUE }
     if (k == nsel) { bg = YELLOW }
     rectfill(cx2, cy2, 18, 10, bg)
     var fg = WHITE
     if (k == nsel) { fg = BLACK }
-    if (k < NCHARS) {
+    if (k < NNAME) {
       print("{CHARS[k]:c}", cx2 + 7, cy2 + 1, fg)
-    } else if (k == NCHARS) {
+    } else if (k == NNAME) {
       print("DEL", cx2 + 1, cy2 + 1, fg)
     } else {
       print("OK", cx2 + 4, cy2 + 1, fg)
@@ -641,15 +1045,10 @@ fn draw_naming(frame) {
 }
 
 draw(frame) {
-  rectfill(0, 0, SCREEN_W, 11, BLACK)
   if (h < 0) {
-    if (redraw_all) {
-      cls(BG)
-      redraw_all = 0
-    }
+    cls(BG)
     rectfill(0, 0, SCREEN_W, 11, BLACK)
     print("SPRITE EDITOR", 3, 1, YELLOW)
-    rectfill(0, 60, SCREEN_W, 40, BG)
     print("Press A to open a cart", 54, 70, WHITE)
     if (msgtime > 0) {
       status(msg)
@@ -658,12 +1057,6 @@ draw(frame) {
     }
     return
   }
-
-  // top bar: which cart, which tile
-  var tx0 = print("SPRITES", 3, 1, YELLOW)
-  tx0 = print(title, tx0 + 6, 1, WHITE)
-  if (unsaved || dirty) { print("*", tx0 + 2, 1, ORANGE) }
-  print("TILE {tile:04}", 183, 1, WHITE)
 
   if (naming) {
     draw_naming(frame)
@@ -675,116 +1068,26 @@ draw(frame) {
     return
   }
 
-  if (redraw_all) { draw_static() }
-  if (redraw_sheet) { draw_sheet() }
-  if (thumb) {
-    var col = tile % 32 - wx
-    var row = tile / 32 - wy
-    if (col >= 0 && col < SHCOLS && row >= 0 && row < SHROWS) {
-      draw_tile(tile, SHX + col * PITCH, SHY + row * PITCH)
-    }
-    thumb = 0
+  if (redraw_all) {
+    cls(BG)
+    redraw_all = 0
+    redraw_view = 1
   }
+  if (redraw_view) {
+    draw_view()
+    redraw_view = 0
+  }
+  draw_ui()
 
-  // canvas: clear it first so the previous cursor outline disappears
-  rectfill(CX - 1, CY - 1, 8 * Z + 1, 8 * Z + 1, BLACK)
-  for (var y = 0; y < 8; y++) {
-    for (var x = 0; x < 8; x++) {
-      rectfill(CX + x * Z, CY + y * Z, Z - 1, Z - 1, px[y * 8 + x])
-    }
-  }
-  var blink = (frame / 10) % 2 == 0
-  if (focus == Focus.CANVAS && blink) {
-    rect(CX + cx * Z - 1, CY + cy * Z - 1, Z + 1, Z + 1, WHITE)
-  } else {
-    rect(CX + cx * Z - 1, CY + cy * Z - 1, Z + 1, Z + 1, GREY)
-  }
-  frame_around(CX - 4, CY - 4, 8 * Z + 7, 8 * Z + 7, focus == Focus.CANVAS)
-
-  // previews at 1x and 2x, sheet position and sprite name
-  rectfill(PVX - 1, PVY - 1, 28, 18, BLACK)
-  for (var y = 0; y < 8; y++) {
-    for (var x = 0; x < 8; x++) {
-      pset(PVX + x, PVY + y, px[y * 8 + x])
-      rectfill(PVX + 10 + x * 2, PVY + y * 2, 2, 2, px[y * 8 + x])
-    }
-  }
-  rectfill(134, 14, 104, 22, BG)
-  print("Tile {tile % 32},{tile / 32}", 134, 15, GREY)
-  if (sname[0] != 0) {
-    print(sname, 134, 25, YELLOW)
-  } else {
-    print("no sprite name", 134, 25, DARK_GREY)
-  }
-
-  // palette
-  for (var i = 0; i < 16; i++) {
-    rectfill(PALX + (i % 8) * 11, PALY + (i / 8) * 9, 10, 8, i)
-  }
-  rect(PALX - 2, PALY - 2, 92, 22, BG)
-  for (var i = 0; i < 16; i++) {
-    if (i == colour) {
-      rect(PALX + (i % 8) * 11 - 1, PALY + (i / 8) * 9 - 1, 12, 10, WHITE)
-    } else {
-      rect(PALX + (i % 8) * 11 - 1, PALY + (i / 8) * 9 - 1, 12, 10, BG)
-    }
-  }
-  frame_around(PALX - 3, PALY - 3, 94, 24, focus == Focus.PALETTE)
-
-  // tools
-  for (var i = 0; i < NTOOLS; i++) {
-    var tx = TOOLX + (i % 4) * TOOLW
-    var ty = TOOLY + (i / 4) * 13
-    var bg = DARK_GREY
-    if (i < 3 && i == tool) { bg = BLUE }
-    rectfill(tx, ty, TOOLW - 2, 11, bg)
-    var fg = WHITE
-    if (focus == Focus.TOOLS && toolsel == i) { fg = YELLOW }
-    print(TOOL_NAMES[i], tx + 3, ty + 1, fg)
-    if (focus == Focus.TOOLS && toolsel == i) {
-      rect(tx - 1, ty - 1, TOOLW, 13, YELLOW)
-    } else {
-      rect(tx - 1, ty - 1, TOOLW, 13, BG)
-    }
-  }
-
-  // flags
-  for (var i = 0; i < 8; i++) {
-    var fx = FLAGX + 36 + i * 10
-    var on = (px[64] >> i) & 1
-    rectfill(fx, FLAGY, 9, 9, on ? ORANGE : DARK_GREY)
-    print("{i}", fx + 2, FLAGY, on ? BLACK : GREY)
-    if (focus == Focus.TOOLS && toolsel == NTOOLS + i) {
-      rect(fx - 1, FLAGY - 1, 11, 11, YELLOW)
-    } else {
-      rect(fx - 1, FLAGY - 1, 11, 11, BG)
-    }
-  }
-  frame_around(TOOLX - 3, TOOLY - 3, 136, 45, focus == Focus.TOOLS)
-
-  // sheet selection and info
-  if (seldrawn != tile) {
-    if (seldrawn >= 0) { mark(seldrawn, BLACK) }
-    seldrawn = tile
-  }
-  if (focus == Focus.SHEET && blink) {
-    mark(tile, YELLOW)
-  } else {
-    mark(tile, WHITE)
-  }
-  frame_around(SHX - 4, SHY - 4, SHCOLS * PITCH + 7, SHROWS * PITCH + 7, focus == Focus.SHEET)
-  rectfill(156, 114, 80, 11, BG)
-  print("ROWS {wy}-{wy + SHROWS - 1}", 156, 116, GREY)
-
-  // the system status line shows hints and messages
+  // the system status line shows messages and hints
   if (msgtime > 0) {
     status(msg)
+  } else if (focus == P_VIEW) {
+    fmt(hint, "{TOOL_NAMES[tool]} {cx},{cy}  A use  B panel")
+    status(hint)
+  } else if (focus == P_TOOLS) {
+    status("Up/down: tool   A: use   B: next panel")
   } else {
-    switch (focus) {
-      Focus.CANVAS { status("A draw  B tap: next panel  B+A undo") }
-      Focus.SHEET { status("Arrows: tile   A: back to canvas") }
-      Focus.PALETTE { status("Arrows: colour   A: back to canvas") }
-      Focus.TOOLS { status("Arrows: choose   A: use   B: next") }
-    }
+    status("Arrows: colour   A: done   B: next panel")
   }
 }

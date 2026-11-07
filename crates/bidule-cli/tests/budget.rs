@@ -85,7 +85,7 @@ fn carts() -> Vec<(&'static str, String)> {
 #[test]
 fn current_levels() {
     let _g = SERIAL.lock().unwrap();
-    let limits = [40, 175, 775, 2050];
+    let limits = [40, 175, 880, 2050];
     for ((name, src), kb) in carts().into_iter().zip(limits) {
         let p = peak(&src);
         eprintln!(

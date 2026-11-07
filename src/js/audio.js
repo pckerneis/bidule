@@ -1,7 +1,7 @@
 /* =====================================================================
    Audio: 4 synth voices (Sound records) + optional bytebeat audio(t)
    ===================================================================== */
-let actx = null, master = null, noiseBuf = null, muted = false;
+let actx = null, master = null, noiseBuf = null, muted = false, volume = 10, audioPaused = false;
 let bbSample = 0, bbLastT = -1, bbVal = 128;
 const voices = [0, 1, 2, 3].map(() => ({ start: 0, end: 0, nodes: null }));
 const nowMs = () => performance.now();
@@ -12,15 +12,21 @@ function ensureAudio() {
       const AC = window.AudioContext || window.webkitAudioContext;
       if (!AC) return;
       actx = new AC();
-      master = actx.createGain(); master.gain.value = muted ? 0 : 1; master.connect(actx.destination);
+      master = actx.createGain(); applyGain(); master.connect(actx.destination);
       noiseBuf = actx.createBuffer(1, actx.sampleRate, actx.sampleRate);
       const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
       const sp = actx.createScriptProcessor(1024, 0, 1);
       sp.onaudioprocess = bytebeatFill;
       sp.connect(master);
     }
-    if (actx.state === "suspended") actx.resume();
+    if (actx.state === "suspended" && !audioPaused) actx.resume();
   } catch (e) { /* audio unavailable in this viewer */ }
+}
+function applyGain() { if (master) master.gain.value = muted ? 0 : volume / 10; }
+/** The system menu freezes sound: voices and audio(t) pick up where they stopped. */
+function pauseAudio(on) {
+  audioPaused = on;
+  try { if (actx) { if (on) actx.suspend(); else actx.resume(); } } catch (_) { /* audio unavailable */ }
 }
 function bytebeatFill(e) {
   const out = e.outputBuffer.getChannelData(0);

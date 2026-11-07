@@ -57,7 +57,8 @@ const STEP_DONE = 0, STEP_LATE = 1, STEP_DIALOG = 2, STEP_FAULT = 3;
 const HANDLER_INIT = 0, HANDLER_UPDATE = 1, HANDLER_DRAW = 2;
 // Built-in ids (crates/bidule-bytecode/src/builtins.rs)
 const B_PICKCART = 42, B_OPENSECTION = 43, B_CARTNAME = 44, B_DRAWASSET = 45, B_READASSET = 47, B_WRITEASSET = 48,
-  B_ASSETCOUNT = 49, B_ASSETNAME = 50, B_SETASSETNAME = 51, B_SAVECART = 52;
+  B_ASSETCOUNT = 49, B_ASSETNAME = 50, B_SETASSETNAME = 51, B_SAVECART = 52,
+  B_CARTCOUNT = 56, B_CARTINFO = 57, B_OPENCART = 58, B_REQUESTWRITE = 59;
 
 function makeWasmVM(src, host) {
   if (!wasmModule) wasmModule = new WebAssembly.Module(Uint8Array.from(atob(BIDULE_WASM), c => c.charCodeAt(0)));
@@ -77,6 +78,14 @@ function makeWasmVM(src, host) {
         case B_PICKCART: pendingDialog = edit.pickFinish(text(), 0); return 0;
         case B_SAVECART: pendingDialog = edit.saveGroup(edit.slotOf(a[0], 0)); return 0;
         case B_OPENSECTION: return edit.openSection(a[0], text(), 0);
+        case B_CARTCOUNT: return host.cartIds().length;
+        case B_CARTINFO: {
+          const id = host.cartIds()[a[0]];
+          if (id == null) fail(0, `cart ${a[0]} doesn't exist; cartcount() says how many there are`);
+          return fill(utf8(host.cartTitle(id)));
+        }
+        case B_OPENCART: return edit.openCart(a[0], text(), 0);
+        case B_REQUESTWRITE: pendingDialog = edit.requestWrite(edit.slotOf(a[0], 0)); return 0;
         case B_CARTNAME: return fill(utf8(host.cartTitle(edit.slotOf(a[0], 0).pick.cartId)));
         case B_ASSETNAME: return fill(utf8(edit.nameOf(edit.slotOf(a[0], 0), a[1], 0)));
         case B_ASSETCOUNT: return edit.slotCount(edit.slotOf(a[0], 0));
@@ -167,6 +176,8 @@ function makeWasmVM(src, host) {
       yield* runHandler(HANDLER_DRAW, "draw", frameNo, inp);
     },
     resumed() {},
+    /** True while an editing session holds changes that were not saved with savecart. */
+    dirty: () => edit.handles.some(h => h.dirty),
     audioSample(t) {
       if (audioFault) return 128;
       const v = x.audio_sample(t);

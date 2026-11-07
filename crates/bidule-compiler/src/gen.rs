@@ -1488,6 +1488,12 @@ impl<'a> Compiler<'a> {
             return self.call_user(f, name, args, pos);
         }
         let Some(b) = builtins::by_name(n) else {
+            if builtins::is_reserved_name(n) {
+                return Err(Diag::error(
+                    pos,
+                    format!("{}() is reserved for a later version and can't be called yet", n),
+                ));
+            }
             return Err(self.unknown("function", name, &INTRINSICS));
         };
         if self.f.audio && !b.audio_ok {
